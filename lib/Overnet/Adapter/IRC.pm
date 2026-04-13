@@ -220,6 +220,156 @@ sub map_message {
   return $self->map_input(%args);
 }
 
+sub derive_channel_presence {
+  my ($self, %args) = @_;
+
+  my $network = $args{network};
+  return _error('IRC network is required')
+    unless defined $network && length $network;
+
+  my $target = $args{target};
+  return _error('IRC target is required')
+    unless defined $target && length $target;
+  return _error('Presence target must be a channel')
+    unless $target =~ /\A[#&]/;
+
+  my $created_at = $args{created_at};
+  return _error('created_at is required')
+    unless defined $created_at;
+
+  my $events = $args{events};
+  return _error('events must be a non-empty array')
+    unless ref($events) eq 'ARRAY' && @{$events};
+
+  my %members;
+  my $as_of;
+
+  for my $event (@{$events}) {
+    return _error('derived presence events must be objects')
+      unless ref($event) eq 'HASH';
+
+    my $command = $event->{command};
+    return _error('derived presence event command is required')
+      unless defined $command && length $command;
+
+    return _error('derived presence event network mismatch')
+      unless defined $event->{network} && $event->{network} eq $network;
+
+    return _error('derived presence event nick is required')
+      unless defined $event->{nick} && length $event->{nick};
+
+    return _error('derived presence event created_at is required')
+      unless defined $event->{created_at};
+
+    my $nick = $event->{nick};
+    my $event_target = $event->{target};
+    my %irc_identity;
+
+    for my $field (qw(account user host)) {
+      next unless exists $event->{$field};
+      return _error("derived presence event $field must be a non-empty string")
+        unless defined $event->{$field} && length $event->{$field};
+      $irc_identity{$field} = $event->{$field};
+    }
+
+    if ($command eq 'JOIN') {
+      return _error('JOIN target must be a channel')
+        unless defined $event_target && $event_target =~ /\A[#&]/;
+      next unless $event_target eq $target;
+
+      $members{$nick} = {
+        nick            => $nick,
+        %irc_identity,
+        last_event_type => 'chat.join',
+      };
+      $as_of = $event->{created_at}
+        if !defined($as_of) || $event->{created_at} > $as_of;
+    } elsif ($command eq 'PART') {
+      return _error('PART target must be a channel')
+        unless defined $event_target && $event_target =~ /\A[#&]/;
+      next unless $event_target eq $target;
+
+      delete $members{$nick};
+      $as_of = $event->{created_at}
+        if !defined($as_of) || $event->{created_at} > $as_of;
+    } elsif ($command eq 'QUIT') {
+      return _error('QUIT target must be a channel')
+        unless defined $event_target && $event_target =~ /\A[#&]/;
+      next unless $event_target eq $target;
+
+      delete $members{$nick};
+      $as_of = $event->{created_at}
+        if !defined($as_of) || $event->{created_at} > $as_of;
+    } elsif ($command eq 'KICK') {
+      return _error('KICK target must be a channel')
+        unless defined $event_target && $event_target =~ /\A[#&]/;
+      return _error('KICK target_nick is required')
+        unless defined $event->{target_nick} && length $event->{target_nick};
+      next unless $event_target eq $target;
+
+      delete $members{$event->{target_nick}};
+      $as_of = $event->{created_at}
+        if !defined($as_of) || $event->{created_at} > $as_of;
+    } elsif ($command eq 'NICK') {
+      return _error('NICK new_nick is required')
+        unless defined $event->{new_nick} && length $event->{new_nick};
+      next unless exists $members{$nick};
+
+      my $member = delete $members{$nick};
+      $member->{nick} = $event->{new_nick};
+      @{$member}{keys %irc_identity} = values %irc_identity if %irc_identity;
+      $member->{last_event_type} = 'irc.nick';
+      $members{$event->{new_nick}} = $member;
+      $as_of = $event->{created_at}
+        if !defined($as_of) || $event->{created_at} > $as_of;
+    }
+  }
+
+  return _error('derived presence requires at least one relevant observed event')
+    unless defined $as_of;
+
+  my $partial = exists $args{partial} ? ($args{partial} ? JSON::PP::true : JSON::PP::false) : JSON::PP::true;
+  my @limitations = ('unsigned', 'no_edit_history', 'irc.ephemeral_presence');
+  push @limitations, 'irc.partial_membership'
+    if $partial;
+
+  my @members = map {
+    my %member = %{$members{$_}};
+    \%member;
+  } sort keys %members;
+
+  my $object_id = "irc:$network:$target";
+
+  return {
+    valid => 1,
+    event => {
+      kind       => 37800,
+      created_at => $created_at + 0,
+      tags       => [
+        [ 'overnet_v', $self->{overnet_version} ],
+        [ 'overnet_et', 'irc.channel_presence' ],
+        [ 'overnet_ot', 'chat.channel' ],
+        [ 'overnet_oid', $object_id ],
+        [ 'd', $object_id ],
+      ],
+      content => $JSON->encode({
+        provenance => {
+          type           => 'adapted',
+          protocol       => 'irc',
+          origin         => "$network/$target",
+          external_scope => 'channel_membership',
+          limitations    => \@limitations,
+        },
+        body => {
+          members => \@members,
+          partial => $partial,
+          as_of   => $as_of + 0,
+        },
+      }),
+    },
+  };
+}
+
 sub _error {
   my ($reason) = @_;
   return {
