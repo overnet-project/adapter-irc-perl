@@ -16,10 +16,20 @@ Current supported mappings:
 
 - channel `PRIVMSG` to `chat.message`
 - channel `NOTICE` to `chat.notice`
+- channel `TOPIC` to `chat.topic`
+- channel `JOIN` to `chat.join`
+- channel `PART` to `chat.part`
+- channel-context `QUIT` to `chat.quit`
+- channel `KICK` to `chat.kick`
+- channel `MODE` to `irc.mode`
 - direct-message `PRIVMSG` to `chat.dm_message`
 - direct-message `NOTICE` to `chat.dm_notice`
+- network `NICK` to `irc.nick`
+- optional identity enrichment in `body.irc_identity`
 
 The adapter currently produces unsigned Overnet event drafts from IRC inputs.
+
+The current design goal is fidelity to IRC semantics first. Observed IRC actions are preserved as adapted events and are not automatically treated as native Overnet authority or derived canonical state.
 
 ## Development
 
