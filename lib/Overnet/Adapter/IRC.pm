@@ -10,7 +10,57 @@ my $JSON = JSON::PP->new;
 sub new {
   my ($class, %args) = @_;
   $args{overnet_version} //= '0.1.0';
+  $args{session_state} ||= {};
   return bless \%args, $class;
+}
+
+sub supported_secret_slots {
+  return [
+    'server_password',
+    'nickserv_password',
+    'sasl_password',
+  ];
+}
+
+sub open_session {
+  my ($self, %args) = @_;
+  my $adapter_session_id = $args{adapter_session_id};
+  my $session_config = $args{session_config} || {};
+  my $secret_values = $args{secret_values} || {};
+  my %supported = map { $_ => 1 } @{supported_secret_slots()};
+
+  die "adapter_session_id is required\n"
+    unless defined $adapter_session_id && length $adapter_session_id;
+  die "session_config must be an object\n"
+    if ref($session_config) ne 'HASH';
+  die "secret_values must be an object\n"
+    if ref($secret_values) ne 'HASH';
+
+  for my $slot (sort keys %{$secret_values}) {
+    die "Unsupported IRC secret slot: $slot\n"
+      unless $supported{$slot};
+    die "IRC secret slot $slot must be a string\n"
+      if !defined($secret_values->{$slot}) || ref($secret_values->{$slot});
+  }
+
+  $self->{session_state}{$adapter_session_id} = {
+    secret_slots => { map { $_ => 1 } sort keys %{$secret_values} },
+  };
+
+  return {
+    accepted => JSON::PP::true,
+  };
+}
+
+sub close_session {
+  my ($self, %args) = @_;
+  my $adapter_session_id = $args{adapter_session_id};
+
+  die "adapter_session_id is required\n"
+    unless defined $adapter_session_id && length $adapter_session_id;
+
+  delete $self->{session_state}{$adapter_session_id};
+  return 1;
 }
 
 sub map_input {
@@ -218,6 +268,23 @@ sub map_input {
 sub map_message {
   my ($self, %args) = @_;
   return $self->map_input(%args);
+}
+
+sub derive {
+  my ($self, %args) = @_;
+  my $operation = $args{operation};
+  my $input = $args{input} || {};
+
+  return _error('derive operation is required')
+    unless defined $operation && length $operation;
+  return _error('derive input must be an object')
+    if ref($input) ne 'HASH';
+
+  if ($operation eq 'channel_presence') {
+    return $self->derive_channel_presence(%{$input});
+  }
+
+  return _error("Unsupported derive operation: $operation");
 }
 
 sub derive_channel_presence {

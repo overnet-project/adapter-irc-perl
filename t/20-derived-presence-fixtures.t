@@ -47,4 +47,79 @@ for my $file (@fixture_files) {
   };
 }
 
+subtest 'generic derive dispatches channel_presence' => sub {
+  my $result = $adapter->derive(
+    operation => 'channel_presence',
+    input     => {
+      network    => 'irc.libera.chat',
+      target     => '#overnet',
+      created_at => 1744300900,
+      events     => [
+        {
+          command    => 'JOIN',
+          network    => 'irc.libera.chat',
+          target     => '#overnet',
+          nick       => 'alice',
+          created_at => 1744300870,
+        },
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'generic derive returns a valid result';
+  is $result->{event}{kind}, 37800, 'generic derive returns derived state event';
+};
+
+subtest 'generic derive rejects unsupported operations' => sub {
+  my $result = $adapter->derive(
+    operation => 'unknown_operation',
+    input     => {},
+  );
+
+  ok !$result->{valid}, 'unsupported derive operation is rejected';
+  is $result->{reason}, 'Unsupported derive operation: unknown_operation', 'unsupported operation reason is reported';
+};
+
+subtest 'adapter declares secure secret slots for runtime session opens' => sub {
+  is_deeply(
+    $adapter->supported_secret_slots,
+    [ 'server_password', 'nickserv_password', 'sasl_password' ],
+    'IRC adapter declares the supported runtime secret slots',
+  );
+};
+
+subtest 'open_session accepts declared secret slots without exposing plaintext back out' => sub {
+  my $result = $adapter->open_session(
+    adapter_session_id => 'adapter-1',
+    session_config     => {
+      network => 'irc.libera.chat',
+      nick    => 'overnet-bot',
+    },
+    secret_values      => {
+      sasl_password => 'super-secret',
+    },
+  );
+
+  ok $result->{accepted}, 'open_session accepts valid declared secret slots';
+
+  like(
+    do {
+      my $error;
+      eval {
+        $adapter->open_session(
+          adapter_session_id => 'adapter-2',
+          session_config     => {},
+          secret_values      => {
+            unsupported_slot => 'secret',
+          },
+        );
+        1;
+      } or $error = $@;
+      $error;
+    },
+    qr/Unsupported IRC secret slot: unsupported_slot/,
+    'open_session rejects unsupported secret slots',
+  );
+};
+
 done_testing;
