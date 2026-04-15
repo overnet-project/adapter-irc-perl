@@ -3,6 +3,8 @@ package Overnet::Adapter::IRC;
 use strict;
 use warnings;
 use JSON::PP ();
+use Net::Nostr::Event;
+use Net::Nostr::Group;
 
 our $VERSION = '0.001';
 my $JSON = JSON::PP->new;
@@ -65,6 +67,9 @@ sub close_session {
 
 sub map_input {
   my ($self, %args) = @_;
+  my $session_config = ref($args{session_config}) eq 'HASH'
+    ? $args{session_config}
+    : {};
 
   my $command = $args{command};
   return _error('IRC command is required')
@@ -128,6 +133,15 @@ sub map_input {
 
   my $is_channel_target = defined $target && $target =~ /\A[#&]/ ? 1 : 0;
   my ($kind, $event_type, $object_type, $object_id, $origin, $body);
+
+  if (($session_config->{authority_profile} || '') eq 'nip29'
+      && ($command eq 'KICK' || $command eq 'MODE')
+      && $is_channel_target) {
+    return $self->_map_nip29_authoritative_input(
+      %args,
+      session_config => $session_config,
+    );
+  }
 
   if ($command eq 'NICK') {
     return _error('NICK new_nick is required')
@@ -283,6 +297,12 @@ sub derive {
   if ($operation eq 'channel_presence') {
     return $self->derive_channel_presence(%{$input});
   }
+  if ($operation eq 'authoritative_channel_state') {
+    return $self->derive_authoritative_channel_state(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
 
   return _error("Unsupported derive operation: $operation");
 }
@@ -435,6 +455,391 @@ sub derive_channel_presence {
       }),
     },
   };
+}
+
+sub derive_authoritative_channel_state {
+  my ($self, %args) = @_;
+
+  my $session_config = ref($args{session_config}) eq 'HASH'
+    ? $args{session_config}
+    : {};
+  return _error('authoritative_channel_state requires session_config.authority_profile = nip29')
+    unless ($session_config->{authority_profile} || '') eq 'nip29';
+
+  my $network = $args{network};
+  return _error('IRC network is required')
+    unless defined $network && length $network;
+
+  my $target = $args{target};
+  return _error('IRC target is required')
+    unless defined $target && length $target;
+  return _error('authoritative_channel_state target must be a channel')
+    unless $target =~ /\A[#&]/;
+
+  my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
+    session_config => $session_config,
+    target         => $target,
+  );
+  return _error($error) if defined $error;
+
+  my $authoritative_events = $args{authoritative_events};
+  return _error('authoritative_events must be a non-empty array')
+    unless ref($authoritative_events) eq 'ARRAY' && @{$authoritative_events};
+
+  my %members;
+  my %metadata = (
+    closed           => 0,
+    moderated        => 0,
+    topic_restricted => 0,
+  );
+  my @supported_roles;
+
+  for my $raw_event (@{$authoritative_events}) {
+    return _error('authoritative events must be objects')
+      unless ref($raw_event) eq 'HASH';
+
+    my $event = eval { Net::Nostr::Event->new(%{$raw_event}) };
+    return _error('authoritative events must be valid Nostr events')
+      unless $event;
+
+    my $event_group_id = Net::Nostr::Group->group_id_from_event($event);
+    return _error('authoritative event group mismatch')
+      if defined $event_group_id && $event_group_id ne $group_id;
+
+    if ($event->kind == 39000 || $event->kind == 9002) {
+      %metadata = (
+        %metadata,
+        %{_metadata_from_group_event($event)},
+      );
+      next;
+    }
+
+    if ($event->kind == 39001) {
+      my $admins = Net::Nostr::Group->admins_from_event($event);
+      for my $admin (@{$admins->{admins} || []}) {
+        my @roles = _sorted_roles(@{$admin->{roles} || []});
+        $members{$admin->{pubkey}} = {
+          pubkey => $admin->{pubkey},
+          roles  => \@roles,
+        };
+      }
+      next;
+    }
+
+    if ($event->kind == 39002) {
+      my $member_info = Net::Nostr::Group->members_from_event($event);
+      my %snapshot = map { $_ => 1 } @{$member_info->{members} || []};
+
+      for my $pubkey (keys %members) {
+        delete $members{$pubkey}
+          unless $snapshot{$pubkey};
+      }
+
+      for my $pubkey (@{$member_info->{members} || []}) {
+        $members{$pubkey} ||= {
+          pubkey => $pubkey,
+          roles  => [],
+        };
+      }
+      next;
+    }
+
+    if ($event->kind == 39003) {
+      my $role_info = Net::Nostr::Group->roles_from_event($event);
+      @supported_roles = map { $_->{name} } @{$role_info->{roles} || []};
+      next;
+    }
+
+    if ($event->kind == 9000) {
+      my ($target_pubkey, @roles) = _target_and_roles_from_group_member_event($event);
+      return _error('put-user event must include one p tag target')
+        unless defined $target_pubkey;
+
+      $members{$target_pubkey} = {
+        pubkey => $target_pubkey,
+        roles  => [ _sorted_roles(@roles) ],
+      };
+      next;
+    }
+
+    if ($event->kind == 9001) {
+      my ($target_pubkey) = _target_and_roles_from_group_member_event($event);
+      return _error('remove-user event must include one p tag target')
+        unless defined $target_pubkey;
+
+      delete $members{$target_pubkey};
+      next;
+    }
+  }
+
+  my $channel_modes = '+' . join(
+    '',
+    grep { $_ }
+      ($metadata{closed} ? 'i' : ''),
+      ($metadata{moderated} ? 'm' : ''),
+      'n',
+      ($metadata{topic_restricted} ? 't' : ''),
+  );
+
+  my @derived_members = map {
+    my $member = $members{$_};
+    {
+      pubkey                => $member->{pubkey},
+      roles                 => [ @{$member->{roles} || []} ],
+      presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
+    }
+  } sort keys %members;
+
+  return {
+    valid => 1,
+    state => [
+      {
+        operation         => 'authoritative_channel_state',
+        authority_profile => 'nip29',
+        object_type       => 'chat.channel',
+        object_id         => "irc:$network:$target",
+        group_host        => $group_host,
+        group_id          => $group_id,
+        group_ref         => Net::Nostr::Group->format_id(
+          host     => $group_host,
+          group_id => $group_id,
+        ),
+        channel_modes   => $channel_modes,
+        supported_roles => [ @supported_roles ],
+        members         => \@derived_members,
+      },
+    ],
+  };
+}
+
+sub _map_nip29_authoritative_input {
+  my ($self, %args) = @_;
+
+  my $session_config = ref($args{session_config}) eq 'HASH'
+    ? $args{session_config}
+    : {};
+  my $command = $args{command} || '';
+  my $target = $args{target};
+  my $created_at = $args{created_at};
+
+  return _error('created_at is required')
+    unless defined $created_at;
+
+  my ($group_host, $group_id, $binding_error) = _resolve_nip29_group_binding(
+    session_config => $session_config,
+    target         => $target,
+  );
+  return _error($binding_error) if defined $binding_error;
+
+  my $actor_pubkey = $args{actor_pubkey};
+  return _error('authoritative NIP-29 mapping requires actor_pubkey')
+    unless defined $actor_pubkey && $actor_pubkey =~ /\A[0-9a-f]{64}\z/;
+
+  if ($command eq 'KICK') {
+    my $target_pubkey = $args{target_pubkey};
+    return _error('authoritative NIP-29 KICK requires target_pubkey')
+      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/;
+
+    my $event = Net::Nostr::Group->remove_user(
+      pubkey     => $actor_pubkey,
+      group_id   => $group_id,
+      target     => $target_pubkey,
+      created_at => $created_at + 0,
+      reason     => defined $args{text} ? $args{text} : '',
+    );
+    return {
+      valid => 1,
+      event => $event->to_hash,
+    };
+  }
+
+  return _error('Unsupported authoritative IRC command')
+    unless $command eq 'MODE';
+
+  my $mode = $args{mode};
+  return _error('MODE mode is required')
+    unless defined $mode && length $mode;
+
+  if ($mode =~ /\A([+-])([ov])\z/) {
+    my ($direction, $mode_letter) = ($1, $2);
+    my $target_pubkey = $args{target_pubkey};
+    return _error("authoritative NIP-29 MODE $mode requires target_pubkey")
+      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/;
+
+    my $current_roles = $args{current_roles};
+    return _error("authoritative NIP-29 MODE $mode requires current_roles")
+      unless ref($current_roles) eq 'ARRAY';
+    return _error('current_roles must be an array of non-empty strings')
+      if grep { !defined($_) || ref($_) || !length($_) } @{$current_roles};
+
+    my $role_name = $mode_letter eq 'o' ? 'irc.operator' : 'irc.voice';
+    my %roles = map { $_ => 1 } @{$current_roles};
+    if ($direction eq '+') {
+      $roles{$role_name} = 1;
+    } else {
+      delete $roles{$role_name};
+    }
+
+    my $event = Net::Nostr::Group->put_user(
+      pubkey     => $actor_pubkey,
+      group_id   => $group_id,
+      target     => $target_pubkey,
+      created_at => $created_at + 0,
+      roles      => [ _sorted_roles(keys %roles) ],
+    );
+    return {
+      valid => 1,
+      event => $event->to_hash,
+    };
+  }
+
+  if ($mode =~ /\A([+-])([imt])\z/) {
+    my ($direction, $mode_letter) = ($1, $2);
+    my $group_metadata = $args{group_metadata} || {};
+    return _error('group_metadata must be an object')
+      if ref($group_metadata) ne 'HASH';
+
+    my %metadata = %{$group_metadata};
+    if ($mode_letter eq 'i') {
+      $metadata{closed} = $direction eq '+' ? 1 : 0;
+    } elsif ($mode_letter eq 'm') {
+      $metadata{moderated} = $direction eq '+' ? 1 : 0;
+    } elsif ($mode_letter eq 't') {
+      $metadata{topic_restricted} = $direction eq '+' ? 1 : 0;
+    }
+
+    my $event = Net::Nostr::Group->edit_metadata(
+      pubkey     => $actor_pubkey,
+      group_id   => $group_id,
+      created_at => $created_at + 0,
+      (defined $metadata{name} ? (name => $metadata{name}) : ()),
+      (defined $metadata{picture} ? (picture => $metadata{picture}) : ()),
+      (defined $metadata{about} ? (about => $metadata{about}) : ()),
+      ($metadata{private} ? (private => 1) : ()),
+      ($metadata{closed} ? (closed => 1) : ()),
+      ($metadata{restricted} ? (restricted => 1) : ()),
+      ($metadata{hidden} ? (hidden => 1) : ()),
+    );
+
+    my $event_hash = $event->to_hash;
+    push @{$event_hash->{tags}},
+      [ 'mode', 'moderated' ]
+      if $metadata{moderated};
+    push @{$event_hash->{tags}},
+      [ 'mode', 'topic-restricted' ]
+      if $metadata{topic_restricted};
+
+    return {
+      valid => 1,
+      event => $event_hash,
+    };
+  }
+
+  return _error("Unsupported authoritative NIP-29 MODE: $mode");
+}
+
+sub _resolve_nip29_group_binding {
+  my (%args) = @_;
+  my $session_config = $args{session_config} || {};
+  my $target = $args{target};
+
+  return (undef, undef, 'authoritative NIP-29 mapping requires session_config.group_host')
+    unless defined $session_config->{group_host} && length $session_config->{group_host};
+  return (undef, undef, 'authoritative NIP-29 mapping requires session_config.channel_groups')
+    unless ref($session_config->{channel_groups}) eq 'HASH';
+  return (undef, undef, 'authoritative NIP-29 mapping requires a channel target')
+    unless defined $target && length $target && $target =~ /\A[#&]/;
+  return (undef, undef, "authoritative NIP-29 mapping has no group binding for $target")
+    unless exists $session_config->{channel_groups}{$target};
+
+  my $binding = $session_config->{channel_groups}{$target};
+  my $group_id = ref($binding) eq 'HASH'
+    ? $binding->{group_id}
+    : $binding;
+  return (undef, undef, "authoritative NIP-29 binding for $target requires group_id")
+    unless defined $group_id && length $group_id;
+  return (undef, undef, "authoritative NIP-29 binding for $target uses an invalid group_id")
+    unless Net::Nostr::Group->validate_group_id($group_id);
+
+  return ($session_config->{group_host}, $group_id, undef);
+}
+
+sub _metadata_from_group_event {
+  my ($event) = @_;
+  my %metadata = (
+    closed           => 0,
+    moderated        => 0,
+    topic_restricted => 0,
+  );
+
+  my $parsed = eval {
+    $event->kind == 39000
+      ? Net::Nostr::Group->metadata_from_event($event)
+      : {};
+  } || {};
+  $metadata{name} = $parsed->{name}
+    if defined $parsed->{name};
+  $metadata{picture} = $parsed->{picture}
+    if defined $parsed->{picture};
+  $metadata{about} = $parsed->{about}
+    if defined $parsed->{about};
+  $metadata{private} = $parsed->{private} ? 1 : 0
+    if exists $parsed->{private};
+  $metadata{restricted} = $parsed->{restricted} ? 1 : 0
+    if exists $parsed->{restricted};
+  $metadata{hidden} = $parsed->{hidden} ? 1 : 0
+    if exists $parsed->{hidden};
+  $metadata{closed} = $parsed->{closed} ? 1 : 0
+    if exists $parsed->{closed};
+
+  for my $tag (@{$event->tags || []}) {
+    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 1;
+    if ($tag->[0] eq 'closed') {
+      $metadata{closed} = 1;
+      next;
+    }
+    next unless $tag->[0] eq 'mode' && @{$tag} >= 2;
+    $metadata{moderated} = 1
+      if $tag->[1] eq 'moderated';
+    $metadata{topic_restricted} = 1
+      if $tag->[1] eq 'topic-restricted';
+  }
+
+  return \%metadata;
+}
+
+sub _target_and_roles_from_group_member_event {
+  my ($event) = @_;
+
+  for my $tag (@{$event->tags || []}) {
+    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
+    next unless $tag->[0] eq 'p';
+    return ($tag->[1], @{$tag}[2 .. $#$tag]);
+  }
+
+  return;
+}
+
+sub _sorted_roles {
+  my @roles = @_;
+  my %seen;
+  @roles = grep { defined $_ && length $_ && !$seen{$_}++ } @roles;
+  return sort {
+    ($a eq 'irc.operator' ? 0 : $a eq 'irc.voice' ? 1 : 2)
+      <=>
+    ($b eq 'irc.operator' ? 0 : $b eq 'irc.voice' ? 1 : 2)
+      ||
+    $a cmp $b
+  } @roles;
+}
+
+sub _presentational_prefix_for_roles {
+  my ($roles) = @_;
+  $roles ||= [];
+  my %roles = map { $_ => 1 } @{$roles};
+  return '@' if $roles{'irc.operator'};
+  return '+' if $roles{'irc.voice'};
+  return '';
 }
 
 sub _error {

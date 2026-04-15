@@ -2,8 +2,14 @@ use strict;
 use warnings;
 use Test::More;
 use JSON::PP;
+use Config;
+use FindBin;
 use File::Basename;
 use File::Spec;
+
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5');
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5', $Config{version});
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5', $Config{version}, $Config{archname});
 
 use Overnet::Adapter::IRC;
 

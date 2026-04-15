@@ -6,7 +6,9 @@ This dist is intended to implement the IRC adapter specification from `../overne
 
 ## Dependency Policy
 
-`Overnet::Adapter::IRC` depends on `Overnet` and must not depend directly on `Net::Nostr`.
+`Overnet::Adapter::IRC` depends on `Overnet` and MAY also depend directly on `Net::Nostr` when the IRC adapter specification requires explicit Nostr or NIP behavior such as `NIP-29`.
+
+Overnet programs are the layer that SHOULD NOT depend directly on `Net::Nostr`. Programs should rely on `Overnet::*` components instead.
 
 ## Status
 
@@ -26,6 +28,8 @@ Current supported mappings:
 - direct-message `NOTICE` to `chat.dm_notice`
 - network `NICK` to `irc.nick`
 - optional identity enrichment in `body.irc_identity`
+- optional authoritative `NIP-29` event drafts for hosted-channel `KICK` and writable `MODE`
+- optional derived authoritative IRC channel state from `NIP-29` group events
 
 The adapter currently produces unsigned Overnet event drafts from IRC inputs.
 

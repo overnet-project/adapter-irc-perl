@@ -77,9 +77,9 @@ Shared core semantics should stay in `overnet-code/`.
 
 ## Dependencies
 
-`Overnet::Adapter::IRC` MUST depend on `Overnet`, not on `Net::Nostr` directly.
+`Overnet::Adapter::IRC` MAY depend on `Net::Nostr` directly when the IRC adapter specification requires explicit Nostr or NIP behavior such as `NIP-29`.
 
-If Nostr functionality is needed by the adapter, it should come through stable `Overnet` interfaces rather than by importing `Net::Nostr` into this dist.
+Overnet programs are the layer that SHOULD NOT import `Net::Nostr` directly. Programs should rely on `Overnet::*` components instead.
 
 ## Output Requirements
 
