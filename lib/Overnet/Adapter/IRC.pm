@@ -80,6 +80,7 @@ sub map_input {
       || $command eq 'NOTICE'
       || $command eq 'TOPIC'
       || $command eq 'JOIN'
+      || $command eq 'INVITE'
       || $command eq 'PART'
       || $command eq 'QUIT'
       || $command eq 'KICK'
@@ -135,13 +136,16 @@ sub map_input {
   my ($kind, $event_type, $object_type, $object_id, $origin, $body);
 
   if (($session_config->{authority_profile} || '') eq 'nip29'
-      && ($command eq 'KICK' || $command eq 'MODE')
+      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'INVITE' || $command eq 'JOIN')
       && $is_channel_target) {
     return $self->_map_nip29_authoritative_input(
       %args,
       session_config => $session_config,
     );
   }
+
+  return _error("Unsupported IRC command: $command")
+    if $command eq 'INVITE';
 
   if ($command eq 'NICK') {
     return _error('NICK new_nick is required')
@@ -492,6 +496,7 @@ sub derive_authoritative_channel_state {
     moderated        => 0,
     topic_restricted => 0,
   );
+  my %pending_invites;
   my @supported_roles;
 
   for my $raw_event (@{$authoritative_events}) {
@@ -570,6 +575,38 @@ sub derive_authoritative_channel_state {
       delete $members{$target_pubkey};
       next;
     }
+
+    if ($event->kind == 9009) {
+      my ($invite_code, $target_pubkey) = _invite_code_and_target_from_group_invite_event($event);
+      return _error('create-invite event must include one code tag')
+        unless defined $invite_code;
+
+      $pending_invites{$invite_code} = {
+        code => $invite_code,
+        (defined $target_pubkey ? (target_pubkey => $target_pubkey) : ()),
+      };
+      next;
+    }
+
+    if ($event->kind == 9021) {
+      my $invite_code = _invite_code_from_group_join_request_event($event);
+      next unless defined $invite_code;
+      next unless exists $pending_invites{$invite_code};
+
+      my $joiner_pubkey = $event->pubkey;
+      next unless defined $joiner_pubkey && length $joiner_pubkey;
+
+      my $invite = $pending_invites{$invite_code};
+      next if defined $invite->{target_pubkey}
+        && $invite->{target_pubkey} ne $joiner_pubkey;
+
+      $members{$joiner_pubkey} ||= {
+        pubkey => $joiner_pubkey,
+        roles  => [],
+      };
+      delete $pending_invites{$invite_code};
+      next;
+    }
   }
 
   my $channel_modes = '+' . join(
@@ -645,6 +682,49 @@ sub _map_nip29_authoritative_input {
       group_id   => $group_id,
       target     => $target_pubkey,
       created_at => $created_at + 0,
+      reason     => defined $args{text} ? $args{text} : '',
+    );
+    return {
+      valid => 1,
+      event => $event->to_hash,
+    };
+  }
+
+  if ($command eq 'INVITE') {
+    my $target_pubkey = $args{target_pubkey};
+    return _error('authoritative NIP-29 INVITE requires target_pubkey')
+      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/;
+
+    my $invite_code = $args{invite_code};
+    return _error('authoritative NIP-29 INVITE requires invite_code')
+      unless defined $invite_code && !ref($invite_code) && length($invite_code);
+
+    my $event = Net::Nostr::Group->create_invite(
+      pubkey     => $actor_pubkey,
+      group_id   => $group_id,
+      code       => $invite_code,
+      created_at => $created_at + 0,
+      reason     => defined $args{text} ? $args{text} : '',
+    );
+    my $event_hash = $event->to_hash;
+    push @{$event_hash->{tags}}, [ 'p', $target_pubkey ];
+
+    return {
+      valid => 1,
+      event => $event_hash,
+    };
+  }
+
+  if ($command eq 'JOIN') {
+    my $invite_code = $args{invite_code};
+    return _error('authoritative NIP-29 JOIN requires invite_code')
+      unless defined $invite_code && !ref($invite_code) && length($invite_code);
+
+    my $event = Net::Nostr::Group->join_request(
+      pubkey     => $actor_pubkey,
+      group_id   => $group_id,
+      created_at => $created_at + 0,
+      code       => $invite_code,
       reason     => defined $args{text} ? $args{text} : '',
     );
     return {
@@ -818,6 +898,34 @@ sub _target_and_roles_from_group_member_event {
   }
 
   return;
+}
+
+sub _invite_code_and_target_from_group_invite_event {
+  my ($event) = @_;
+  my $invite_code;
+  my $target_pubkey;
+
+  for my $tag (@{$event->tags || []}) {
+    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
+    $invite_code = $tag->[1]
+      if !defined($invite_code) && $tag->[0] eq 'code';
+    $target_pubkey = $tag->[1]
+      if !defined($target_pubkey) && $tag->[0] eq 'p';
+  }
+
+  return ($invite_code, $target_pubkey);
+}
+
+sub _invite_code_from_group_join_request_event {
+  my ($event) = @_;
+
+  for my $tag (@{$event->tags || []}) {
+    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
+    return $tag->[1]
+      if $tag->[0] eq 'code';
+  }
+
+  return undef;
 }
 
 sub _sorted_roles {

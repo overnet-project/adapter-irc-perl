@@ -110,6 +110,34 @@ subtest 'authoritative MODE +m maps to a NIP-29 metadata edit with IRC profile m
   );
 };
 
+subtest 'authoritative INVITE maps to a NIP-29 create-invite event draft' => sub {
+  my $result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'INVITE',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    target_nick    => 'bob',
+    target_pubkey  => 'b' x 64,
+    invite_code    => 'invite-bob',
+    created_at     => 1_744_301_003,
+  );
+
+  ok $result->{valid}, 'authoritative INVITE is accepted';
+  is $result->{event}{kind}, 9009, 'authoritative INVITE emits kind 9009';
+  is_deeply(
+    $result->{event}{tags},
+    [
+      [ 'h', 'overnet' ],
+      [ 'code', 'invite-bob' ],
+      [ 'p', 'b' x 64 ],
+    ],
+    'authoritative INVITE targets the bound NIP-29 group with an invite code and invitee pubkey',
+  );
+  is $result->{event}{content}, '', 'authoritative INVITE uses empty content by default';
+};
+
 subtest 'derive authoritative channel state reconstructs IRC-facing state from NIP-29 events' => sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,
@@ -193,6 +221,97 @@ subtest 'derive authoritative channel state reconstructs IRC-facing state from N
       ],
     },
     'authoritative state derivation returns IRC-facing NIP-29 channel state',
+  );
+};
+
+subtest 'derive authoritative channel state accepts a matching invite code plus join request as local membership' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_020,
+    closed     => 1,
+  )->to_hash;
+
+  my $admins = Net::Nostr::Group->admins(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_021,
+    members    => [
+      {
+        pubkey => 'a' x 64,
+        roles  => ['irc.operator'],
+      },
+    ],
+  )->to_hash;
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_022,
+    members    => [
+      'a' x 64,
+    ],
+  )->to_hash;
+
+  my $roles = Net::Nostr::Group->roles(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_023,
+    roles      => [
+      { name => 'irc.operator' },
+      { name => 'irc.voice' },
+    ],
+  )->to_hash;
+
+  my $invite = Net::Nostr::Group->create_invite(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_024,
+  )->to_hash;
+  push @{$invite->{tags}}, [ 'p', 'b' x 64 ];
+
+  my $join = Net::Nostr::Group->join_request(
+    pubkey     => 'b' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_025,
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_state',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [
+        $metadata,
+        $admins,
+        $members,
+        $roles,
+        $invite,
+        $join,
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'authoritative state derivation succeeds for invite-mediated admission';
+  is $result->{state}[0]{channel_modes}, '+in', 'closed authoritative channel keeps +i and implicit +n';
+  is_deeply(
+    $result->{state}[0]{members},
+    [
+      {
+        pubkey                => 'a' x 64,
+        roles                 => ['irc.operator'],
+        presentational_prefix => '@',
+      },
+      {
+        pubkey                => 'b' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+    ],
+    'matching invite plus join request produces derived local membership for the invited pubkey',
   );
 };
 
