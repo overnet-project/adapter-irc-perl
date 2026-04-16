@@ -301,6 +301,12 @@ sub derive {
   if ($operation eq 'channel_presence') {
     return $self->derive_channel_presence(%{$input});
   }
+  if ($operation eq 'authoritative_channel_view') {
+    return $self->derive_authoritative_channel_view(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
   if ($operation eq 'authoritative_channel_state') {
     return $self->derive_authoritative_channel_state(
       %{$input},
@@ -464,10 +470,42 @@ sub derive_channel_presence {
 sub derive_authoritative_channel_state {
   my ($self, %args) = @_;
 
+  my $view_result = $self->derive_authoritative_channel_view(%args);
+  return $view_result unless $view_result->{valid};
+
+  my $view = $view_result->{view}[0];
+  return {
+    valid => 1,
+    state => [
+      {
+        operation         => 'authoritative_channel_state',
+        authority_profile => $view->{authority_profile},
+        object_type       => $view->{object_type},
+        object_id         => $view->{object_id},
+        group_host        => $view->{group_host},
+        group_id          => $view->{group_id},
+        group_ref         => $view->{group_ref},
+        channel_modes     => $view->{channel_modes},
+        supported_roles   => [ @{$view->{supported_roles} || []} ],
+        members           => [
+          map { +{
+            pubkey                => $_->{pubkey},
+            roles                 => [ @{$_->{roles} || []} ],
+            presentational_prefix => $_->{presentational_prefix},
+          } } @{$view->{members} || []}
+        ],
+      },
+    ],
+  };
+}
+
+sub derive_authoritative_channel_view {
+  my ($self, %args) = @_;
+
   my $session_config = ref($args{session_config}) eq 'HASH'
     ? $args{session_config}
     : {};
-  return _error('authoritative_channel_state requires session_config.authority_profile = nip29')
+  return _error('authoritative_channel_view requires session_config.authority_profile = nip29')
     unless ($session_config->{authority_profile} || '') eq 'nip29';
 
   my $network = $args{network};
@@ -477,7 +515,7 @@ sub derive_authoritative_channel_state {
   my $target = $args{target};
   return _error('IRC target is required')
     unless defined $target && length $target;
-  return _error('authoritative_channel_state target must be a channel')
+  return _error('authoritative_channel_view target must be a channel')
     unless $target =~ /\A[#&]/;
 
   my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
@@ -489,8 +527,12 @@ sub derive_authoritative_channel_state {
   my $authoritative_events = $args{authoritative_events};
   return _error('authoritative_events must be a non-empty array')
     unless ref($authoritative_events) eq 'ARRAY' && @{$authoritative_events};
+  my $actor_pubkey = $args{actor_pubkey};
+  return _error('actor_pubkey must be a 64-character hex pubkey when supplied')
+    if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/);
 
   my %members;
+  my %present_members;
   my %metadata = (
     closed           => 0,
     moderated        => 0,
@@ -499,14 +541,14 @@ sub derive_authoritative_channel_state {
   my %pending_invites;
   my @supported_roles;
 
-  for my $raw_event (@{$authoritative_events}) {
-    return _error('authoritative events must be objects')
-      unless ref($raw_event) eq 'HASH';
+  my @sorted_events = eval { _sorted_authoritative_group_events(@{$authoritative_events}) };
+  if ($@) {
+    my $error = $@;
+    chomp $error;
+    return _error($error);
+  }
 
-    my $event = eval { Net::Nostr::Event->new(%{$raw_event}) };
-    return _error('authoritative events must be valid Nostr events')
-      unless $event;
-
+  for my $event (@sorted_events) {
     my $event_group_id = Net::Nostr::Group->group_id_from_event($event);
     return _error('authoritative event group mismatch')
       if defined $event_group_id && $event_group_id ne $group_id;
@@ -573,6 +615,7 @@ sub derive_authoritative_channel_state {
         unless defined $target_pubkey;
 
       delete $members{$target_pubkey};
+      delete $present_members{$target_pubkey};
       next;
     }
 
@@ -590,21 +633,32 @@ sub derive_authoritative_channel_state {
 
     if ($event->kind == 9021) {
       my $invite_code = _invite_code_from_group_join_request_event($event);
-      next unless defined $invite_code;
-      next unless exists $pending_invites{$invite_code};
-
       my $joiner_pubkey = _effective_actor_pubkey_from_group_event($event);
       next unless defined $joiner_pubkey && length $joiner_pubkey;
 
-      my $invite = $pending_invites{$invite_code};
-      next if defined $invite->{target_pubkey}
-        && $invite->{target_pubkey} ne $joiner_pubkey;
+      my $joined = 0;
+      if (exists $members{$joiner_pubkey}) {
+        $joined = 1;
+      } elsif (defined $invite_code && exists $pending_invites{$invite_code}) {
+        my $invite = $pending_invites{$invite_code};
+        next if defined $invite->{target_pubkey}
+          && $invite->{target_pubkey} ne $joiner_pubkey;
 
-      $members{$joiner_pubkey} ||= {
-        pubkey => $joiner_pubkey,
-        roles  => [],
-      };
-      delete $pending_invites{$invite_code};
+        $members{$joiner_pubkey} ||= {
+          pubkey => $joiner_pubkey,
+          roles  => [],
+        };
+        delete $pending_invites{$invite_code};
+        $joined = 1;
+      } elsif (!$metadata{closed}) {
+        $members{$joiner_pubkey} ||= {
+          pubkey => $joiner_pubkey,
+          roles  => [],
+        };
+        $joined = 1;
+      }
+
+      $present_members{$joiner_pubkey} = 1 if $joined;
       next;
     }
 
@@ -613,6 +667,7 @@ sub derive_authoritative_channel_state {
       next unless defined $leaver_pubkey && length $leaver_pubkey;
 
       delete $members{$leaver_pubkey};
+      delete $present_members{$leaver_pubkey};
       next;
     }
   }
@@ -634,26 +689,52 @@ sub derive_authoritative_channel_state {
       presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
     }
   } sort keys %members;
+  my @derived_present_members = map {
+    my $member = $members{$_}
+      or next;
+    {
+      pubkey                => $member->{pubkey},
+      roles                 => [ @{$member->{roles} || []} ],
+      presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
+    }
+  } grep { $present_members{$_} } sort keys %members;
+  my @derived_pending_invites = map {
+    my %invite = %{$pending_invites{$_}};
+    \%invite;
+  } sort keys %pending_invites;
+
+  my %view = (
+    operation         => 'authoritative_channel_view',
+    authority_profile => 'nip29',
+    object_type       => 'chat.channel',
+    object_id         => "irc:$network:$target",
+    group_host        => $group_host,
+    group_id          => $group_id,
+    group_ref         => Net::Nostr::Group->format_id(
+      host     => $group_host,
+      group_id => $group_id,
+    ),
+    channel_modes   => $channel_modes,
+    supported_roles => [ @supported_roles ],
+    members         => \@derived_members,
+    present_members => \@derived_present_members,
+    pending_invites => \@derived_pending_invites,
+  );
+
+  if (defined $actor_pubkey) {
+    my $member = $members{$actor_pubkey};
+    my $invite = _pending_invite_for_pubkey(\%pending_invites, $actor_pubkey);
+    $view{admission} = {
+      allowed     => $member || $invite || !$metadata{closed} ? JSON::PP::true : JSON::PP::false,
+      member      => $member ? JSON::PP::true : JSON::PP::false,
+      (defined($invite) ? (invite_code => $invite->{code}) : ()),
+      reason      => $member || $invite || !$metadata{closed} ? '' : '+i',
+    };
+  }
 
   return {
     valid => 1,
-    state => [
-      {
-        operation         => 'authoritative_channel_state',
-        authority_profile => 'nip29',
-        object_type       => 'chat.channel',
-        object_id         => "irc:$network:$target",
-        group_host        => $group_host,
-        group_id          => $group_id,
-        group_ref         => Net::Nostr::Group->format_id(
-          host     => $group_host,
-          group_id => $group_id,
-        ),
-        channel_modes   => $channel_modes,
-        supported_roles => [ @supported_roles ],
-        members         => \@derived_members,
-      },
-    ],
+    view  => [ \%view ],
   };
 }
 
@@ -1007,6 +1088,21 @@ sub _invite_code_from_group_join_request_event {
   return undef;
 }
 
+sub _pending_invite_for_pubkey {
+  my ($pending_invites, $pubkey) = @_;
+  return undef unless ref($pending_invites) eq 'HASH';
+  return undef unless defined $pubkey && !ref($pubkey) && length($pubkey);
+
+  for my $code (sort keys %{$pending_invites}) {
+    my $invite = $pending_invites->{$code};
+    next unless ref($invite) eq 'HASH';
+    next if defined $invite->{target_pubkey} && $invite->{target_pubkey} ne $pubkey;
+    return $invite;
+  }
+
+  return undef;
+}
+
 sub _effective_actor_pubkey_from_group_event {
   my ($event) = @_;
 
@@ -1018,6 +1114,58 @@ sub _effective_actor_pubkey_from_group_event {
   }
 
   return $event->pubkey;
+}
+
+sub _sorted_authoritative_group_events {
+  my @raw_events = @_;
+  my @decorated;
+  my $index = 0;
+
+  for my $raw_event (@raw_events) {
+    die "authoritative events must be objects\n"
+      unless ref($raw_event) eq 'HASH';
+
+    my $event = eval { Net::Nostr::Event->new(%{$raw_event}) };
+    die "authoritative events must be valid Nostr events\n"
+      unless $event;
+
+    my ($authority, $sequence) = _authority_ordering_from_event($event);
+    push @decorated, [
+      $event->created_at + 0,
+      $authority,
+      $sequence,
+      $index++,
+      $event,
+    ];
+  }
+
+  return map { $_->[4] } sort {
+    $a->[0] <=> $b->[0]
+      || $a->[1] cmp $b->[1]
+      || $a->[2] <=> $b->[2]
+      || $a->[3] <=> $b->[3]
+  } @decorated;
+}
+
+sub _authority_ordering_from_event {
+  my ($event) = @_;
+  my $authority = '';
+  my $sequence = 0;
+
+  for my $tag (@{$event->tags || []}) {
+    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
+    if (($tag->[0] || '') eq 'overnet_authority' && !length($authority)) {
+      $authority = defined($tag->[1]) && !ref($tag->[1]) ? $tag->[1] : '';
+      next;
+    }
+    if (($tag->[0] || '') eq 'overnet_sequence' && !$sequence) {
+      $sequence = (defined($tag->[1]) && !ref($tag->[1]) && $tag->[1] =~ /\A\d+\z/)
+        ? 0 + $tag->[1]
+        : 0;
+    }
+  }
+
+  return ($authority, $sequence);
 }
 
 sub _apply_delegated_authority_tags {
