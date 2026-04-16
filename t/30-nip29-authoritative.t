@@ -169,6 +169,31 @@ subtest 'authoritative JOIN can target a delegated signer while preserving the e
   );
 };
 
+subtest 'authoritative PART maps to a NIP-29 leave-request event draft' => sub {
+  my $result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'PART',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'bob',
+    actor_pubkey   => 'b' x 64,
+    text           => 'later',
+    created_at     => 1_744_301_005,
+  );
+
+  ok $result->{valid}, 'authoritative PART is accepted';
+  is $result->{event}{kind}, 9022, 'authoritative PART emits kind 9022';
+  is $result->{event}{pubkey}, 'b' x 64, 'authoritative PART uses the actor pubkey';
+  is $result->{event}{content}, 'later', 'authoritative PART carries the part reason in content';
+  is_deeply(
+    $result->{event}{tags},
+    [
+      [ 'h', 'overnet' ],
+    ],
+    'authoritative PART targets the bound NIP-29 group without a member p tag',
+  );
+};
+
 subtest 'derive authoritative channel state reconstructs IRC-facing state from NIP-29 events' => sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,
@@ -343,6 +368,88 @@ subtest 'derive authoritative channel state accepts a matching invite code plus 
       },
     ],
     'matching invite plus join request produces derived local membership for the invited pubkey',
+  );
+};
+
+subtest 'derive authoritative channel state removes local membership after a leave request' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_026,
+    closed     => 1,
+  )->to_hash;
+
+  my $admins = Net::Nostr::Group->admins(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_027,
+    members    => [
+      {
+        pubkey => 'a' x 64,
+        roles  => ['irc.operator'],
+      },
+    ],
+  )->to_hash;
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_028,
+    members    => [
+      'a' x 64,
+    ],
+  )->to_hash;
+
+  my $invite = Net::Nostr::Group->create_invite(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_029,
+  )->to_hash;
+  push @{$invite->{tags}}, [ 'p', 'b' x 64 ];
+
+  my $join = Net::Nostr::Group->join_request(
+    pubkey     => 'b' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_030,
+  )->to_hash;
+
+  my $leave = Net::Nostr::Group->leave_request(
+    pubkey     => 'b' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_031,
+    reason     => 'later',
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_state',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [
+        $metadata,
+        $admins,
+        $members,
+        $invite,
+        $join,
+        $leave,
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'authoritative state derivation succeeds for leave requests';
+  is_deeply(
+    $result->{state}[0]{members},
+    [
+      {
+        pubkey                => 'a' x 64,
+        roles                 => ['irc.operator'],
+        presentational_prefix => '@',
+      },
+    ],
+    'leave requests remove the local member from derived authoritative membership',
   );
 };
 

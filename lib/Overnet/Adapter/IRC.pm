@@ -136,7 +136,7 @@ sub map_input {
   my ($kind, $event_type, $object_type, $object_id, $origin, $body);
 
   if (($session_config->{authority_profile} || '') eq 'nip29'
-      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'INVITE' || $command eq 'JOIN')
+      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'INVITE' || $command eq 'JOIN' || $command eq 'PART')
       && $is_channel_target) {
     return $self->_map_nip29_authoritative_input(
       %args,
@@ -607,6 +607,14 @@ sub derive_authoritative_channel_state {
       delete $pending_invites{$invite_code};
       next;
     }
+
+    if ($event->kind == 9022) {
+      my $leaver_pubkey = _effective_actor_pubkey_from_group_event($event);
+      next unless defined $leaver_pubkey && length $leaver_pubkey;
+
+      delete $members{$leaver_pubkey};
+      next;
+    }
   }
 
   my $channel_modes = '+' . join(
@@ -752,6 +760,27 @@ sub _map_nip29_authoritative_input {
       group_id   => $group_id,
       created_at => $created_at + 0,
       (defined $invite_code ? (code => $invite_code) : ()),
+      reason     => defined $args{text} ? $args{text} : '',
+    );
+    my $event_hash = $event->to_hash;
+    _apply_delegated_authority_tags(
+      event_hash         => $event_hash,
+      actor_pubkey       => $actor_pubkey,
+      signing_pubkey     => $signing_pubkey,
+      authority_event_id => $authority_event_id,
+      authority_sequence => $authority_sequence,
+    );
+    return {
+      valid => 1,
+      event => $event_hash,
+    };
+  }
+
+  if ($command eq 'PART') {
+    my $event = Net::Nostr::Group->leave_request(
+      pubkey     => $event_pubkey,
+      group_id   => $group_id,
+      created_at => $created_at + 0,
       reason     => defined $args{text} ? $args{text} : '',
     );
     my $event_hash = $event->to_hash;
