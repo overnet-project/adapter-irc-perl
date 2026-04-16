@@ -3,6 +3,7 @@ package Overnet::Adapter::IRC;
 use strict;
 use warnings;
 use JSON::PP ();
+use Overnet::Authority::HostedChannel ();
 use Net::Nostr::Event;
 use Net::Nostr::Group;
 
@@ -521,6 +522,7 @@ sub derive_authoritative_channel_view {
     unless $target =~ /\A[#&]/;
 
   my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
+    network        => $network,
     session_config => $session_config,
     target         => $target,
   );
@@ -758,6 +760,7 @@ sub _map_nip29_authoritative_input {
     unless defined $created_at;
 
   my ($group_host, $group_id, $binding_error) = _resolve_nip29_group_binding(
+    network        => $args{network},
     session_config => $session_config,
     target         => $target,
   );
@@ -842,6 +845,39 @@ sub _map_nip29_authoritative_input {
     return _error('authoritative NIP-29 JOIN invite_code must be a non-empty string when supplied')
       if defined($invite_code) && (ref($invite_code) || !length($invite_code));
 
+    my @events;
+    if ($args{create_channel}) {
+      my $group_metadata = $args{group_metadata};
+      $group_metadata = {}
+        unless ref($group_metadata) eq 'HASH';
+      my %metadata = %{$group_metadata};
+      $metadata{name} = $target
+        unless defined $metadata{name} && length($metadata{name});
+
+      push @events,
+        _build_group_metadata_event_hash(
+          event_pubkey        => $event_pubkey,
+          group_id            => $group_id,
+          created_at          => $created_at + 0,
+          metadata            => \%metadata,
+          actor_pubkey        => $actor_pubkey,
+          signing_pubkey      => $signing_pubkey,
+          authority_event_id  => $authority_event_id,
+          authority_sequence  => $authority_sequence,
+        ),
+        _build_group_put_user_event_hash(
+          event_pubkey        => $event_pubkey,
+          group_id            => $group_id,
+          created_at          => $created_at + 0,
+          target_pubkey       => $actor_pubkey,
+          roles               => ['irc.operator'],
+          actor_pubkey        => $actor_pubkey,
+          signing_pubkey      => $signing_pubkey,
+          authority_event_id  => $authority_event_id,
+          authority_sequence  => $authority_sequence,
+        );
+    }
+
     my $event = Net::Nostr::Group->join_request(
       pubkey     => $event_pubkey,
       group_id   => $group_id,
@@ -857,9 +893,11 @@ sub _map_nip29_authoritative_input {
       authority_event_id => $authority_event_id,
       authority_sequence => $authority_sequence,
     );
+    push @events, $event_hash;
+
     return {
       valid => 1,
-      event => $event_hash,
+      (@events == 1 ? (event => $events[0]) : (events => \@events)),
     };
   }
 
@@ -993,28 +1031,72 @@ sub _map_nip29_authoritative_input {
 
 sub _resolve_nip29_group_binding {
   my (%args) = @_;
-  my $session_config = $args{session_config} || {};
-  my $target = $args{target};
+  return Overnet::Authority::HostedChannel::resolve_nip29_group_binding(
+    network        => $args{network},
+    session_config => $args{session_config},
+    target         => $args{target},
+  );
+}
 
-  return (undef, undef, 'authoritative NIP-29 mapping requires session_config.group_host')
-    unless defined $session_config->{group_host} && length $session_config->{group_host};
-  return (undef, undef, 'authoritative NIP-29 mapping requires session_config.channel_groups')
-    unless ref($session_config->{channel_groups}) eq 'HASH';
-  return (undef, undef, 'authoritative NIP-29 mapping requires a channel target')
-    unless defined $target && length $target && $target =~ /\A[#&]/;
-  return (undef, undef, "authoritative NIP-29 mapping has no group binding for $target")
-    unless exists $session_config->{channel_groups}{$target};
+sub _build_group_metadata_event_hash {
+  my (%args) = @_;
+  my $metadata = $args{metadata} || {};
 
-  my $binding = $session_config->{channel_groups}{$target};
-  my $group_id = ref($binding) eq 'HASH'
-    ? $binding->{group_id}
-    : $binding;
-  return (undef, undef, "authoritative NIP-29 binding for $target requires group_id")
-    unless defined $group_id && length $group_id;
-  return (undef, undef, "authoritative NIP-29 binding for $target uses an invalid group_id")
-    unless Net::Nostr::Group->validate_group_id($group_id);
+  my $event = Net::Nostr::Group->metadata(
+    pubkey     => $args{event_pubkey},
+    group_id   => $args{group_id},
+    created_at => $args{created_at} + 0,
+    (defined $metadata->{name} ? (name => $metadata->{name}) : ()),
+    (defined $metadata->{picture} ? (picture => $metadata->{picture}) : ()),
+    (defined $metadata->{about} ? (about => $metadata->{about}) : ()),
+    ($metadata->{private} ? (private => 1) : ()),
+    ($metadata->{closed} ? (closed => 1) : ()),
+    ($metadata->{restricted} ? (restricted => 1) : ()),
+    ($metadata->{hidden} ? (hidden => 1) : ()),
+  );
 
-  return ($session_config->{group_host}, $group_id, undef);
+  my $event_hash = $event->to_hash;
+  push @{$event_hash->{tags}},
+    [ 'mode', 'moderated' ]
+    if $metadata->{moderated};
+  push @{$event_hash->{tags}},
+    [ 'mode', 'topic-restricted' ]
+    if $metadata->{topic_restricted};
+  push @{$event_hash->{tags}},
+    [ 'topic', $metadata->{topic} ]
+    if exists $metadata->{topic};
+
+  _apply_delegated_authority_tags(
+    event_hash         => $event_hash,
+    actor_pubkey       => $args{actor_pubkey},
+    signing_pubkey     => $args{signing_pubkey},
+    authority_event_id => $args{authority_event_id},
+    authority_sequence => $args{authority_sequence},
+  );
+
+  return $event_hash;
+}
+
+sub _build_group_put_user_event_hash {
+  my (%args) = @_;
+
+  my $event = Net::Nostr::Group->put_user(
+    pubkey     => $args{event_pubkey},
+    group_id   => $args{group_id},
+    target     => $args{target_pubkey},
+    created_at => $args{created_at} + 0,
+    roles      => [ _sorted_roles(@{$args{roles} || []}) ],
+  );
+  my $event_hash = $event->to_hash;
+  _apply_delegated_authority_tags(
+    event_hash         => $event_hash,
+    actor_pubkey       => $args{actor_pubkey},
+    signing_pubkey     => $args{signing_pubkey},
+    authority_event_id => $args{authority_event_id},
+    authority_sequence => $args{authority_sequence},
+  );
+
+  return $event_hash;
 }
 
 sub _metadata_from_group_event {

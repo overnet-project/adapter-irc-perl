@@ -8,8 +8,10 @@ use File::Spec;
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5');
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5', $Config{version});
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5', $Config{version}, $Config{archname});
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'lib');
 
 use Net::Nostr::Group;
+use Overnet::Authority::HostedChannel ();
 use Overnet::Adapter::IRC;
 
 my $adapter = Overnet::Adapter::IRC->new;
@@ -21,6 +23,13 @@ sub _authority_config {
     channel_groups    => {
       '#overnet' => 'overnet',
     },
+  };
+}
+
+sub _dynamic_authority_config {
+  return {
+    authority_profile => 'nip29',
+    group_host        => 'groups.example.test',
   };
 }
 
@@ -168,6 +177,70 @@ subtest 'authoritative INVITE maps to a NIP-29 create-invite event draft' => sub
     'authoritative INVITE targets the bound NIP-29 group with an invite code and invitee pubkey',
   );
   is $result->{event}{content}, '', 'authoritative INVITE uses empty content by default';
+};
+
+subtest 'authoritative JOIN can bootstrap a newly created hosted channel without static channel_groups' => sub {
+  my $group_id = Overnet::Authority::HostedChannel::authoritative_group_id(
+    network => 'irc.example.test',
+    channel => '#Fresh',
+  );
+  my $result = $adapter->map_input(
+    session_config     => _dynamic_authority_config(),
+    command            => 'JOIN',
+    network            => 'irc.example.test',
+    target             => '#Fresh',
+    nick               => 'alice',
+    actor_pubkey       => 'a' x 64,
+    signing_pubkey     => 'd' x 64,
+    authority_event_id => 'e' x 64,
+    authority_sequence => 11,
+    create_channel     => 1,
+    group_metadata     => {
+      name => '#Fresh',
+    },
+    created_at => 1_744_301_003,
+  );
+
+  ok $result->{valid}, 'authoritative bootstrap JOIN is accepted';
+  ok ref($result->{events}) eq 'ARRAY', 'authoritative bootstrap JOIN emits multiple event drafts';
+  is scalar(@{$result->{events}}), 3, 'authoritative bootstrap JOIN emits metadata, operator bootstrap, and join drafts';
+  is_deeply(
+    [ map { $_->{kind} } @{$result->{events}} ],
+    [ 39000, 9000, 9021 ],
+    'authoritative bootstrap JOIN emits the expected NIP-29 event kinds',
+  );
+  is_deeply(
+    $result->{events}[0]{tags},
+    [
+      [ 'd', $group_id ],
+      [ 'name', '#Fresh' ],
+      [ 'overnet_actor', 'a' x 64 ],
+      [ 'overnet_authority', 'e' x 64 ],
+      [ 'overnet_sequence', 11 ],
+    ],
+    'authoritative bootstrap metadata uses the deterministic binding and delegated authority tags',
+  );
+  is_deeply(
+    $result->{events}[1]{tags},
+    [
+      [ 'h', $group_id ],
+      [ 'p', 'a' x 64, 'irc.operator' ],
+      [ 'overnet_actor', 'a' x 64 ],
+      [ 'overnet_authority', 'e' x 64 ],
+      [ 'overnet_sequence', 11 ],
+    ],
+    'authoritative bootstrap role event seeds the creator as irc.operator',
+  );
+  is_deeply(
+    $result->{events}[2]{tags},
+    [
+      [ 'h', $group_id ],
+      [ 'overnet_actor', 'a' x 64 ],
+      [ 'overnet_authority', 'e' x 64 ],
+      [ 'overnet_sequence', 11 ],
+    ],
+    'authoritative bootstrap join uses the deterministic binding and delegated actor tags',
+  );
 };
 
 subtest 'authoritative JOIN can target a delegated signer while preserving the effective actor' => sub {
