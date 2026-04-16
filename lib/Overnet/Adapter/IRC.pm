@@ -487,6 +487,7 @@ sub derive_authoritative_channel_state {
         group_id          => $view->{group_id},
         group_ref         => $view->{group_ref},
         channel_modes     => $view->{channel_modes},
+        (ref($view->{ban_masks}) eq 'ARRAY' && @{$view->{ban_masks}} ? (ban_masks => [ @{$view->{ban_masks}} ]) : ()),
         (exists $view->{topic} ? (topic => $view->{topic}) : ()),
         (exists $view->{topic_actor_pubkey} ? (topic_actor_pubkey => $view->{topic_actor_pubkey}) : ()),
         supported_roles   => [ @{$view->{supported_roles} || []} ],
@@ -534,6 +535,9 @@ sub derive_authoritative_channel_view {
   my $actor_pubkey = $args{actor_pubkey};
   return _error('actor_pubkey must be a 64-character hex pubkey when supplied')
     if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/);
+  my $actor_mask = $args{actor_mask};
+  return _error('actor_mask must be a non-empty string when supplied')
+    if defined($actor_mask) && (ref($actor_mask) || !length($actor_mask));
 
   my %members;
   my %present_members;
@@ -541,6 +545,7 @@ sub derive_authoritative_channel_view {
     closed           => 0,
     moderated        => 0,
     topic_restricted => 0,
+    ban_masks        => [],
     topic            => undef,
     topic_actor_pubkey => undef,
   );
@@ -721,6 +726,7 @@ sub derive_authoritative_channel_view {
       group_id => $group_id,
     ),
     channel_modes   => $channel_modes,
+    (@{$metadata{ban_masks} || []} ? (ban_masks => [ @{$metadata{ban_masks}} ]) : ()),
     (defined($metadata{topic}) ? (topic => $metadata{topic}) : ()),
     (defined($metadata{topic_actor_pubkey}) ? (topic_actor_pubkey => $metadata{topic_actor_pubkey}) : ()),
     supported_roles => [ @supported_roles ],
@@ -732,11 +738,14 @@ sub derive_authoritative_channel_view {
   if (defined $actor_pubkey) {
     my $member = $members{$actor_pubkey};
     my $invite = _pending_invite_for_pubkey(\%pending_invites, $actor_pubkey);
+    my $banned = !$member && defined($actor_mask)
+      ? _actor_mask_is_banned($metadata{ban_masks}, $actor_mask)
+      : 0;
     $view{admission} = {
-      allowed     => $member || $invite || !$metadata{closed} ? JSON::PP::true : JSON::PP::false,
+      allowed     => $banned ? JSON::PP::false : ($member || $invite || !$metadata{closed} ? JSON::PP::true : JSON::PP::false),
       member      => $member ? JSON::PP::true : JSON::PP::false,
-      (defined($invite) ? (invite_code => $invite->{code}) : ()),
-      reason      => $member || $invite || !$metadata{closed} ? '' : '+i',
+      (!$banned && defined($invite) ? (invite_code => $invite->{code}) : ()),
+      reason      => $banned ? '+b' : ($member || $invite || !$metadata{closed} ? '' : '+i'),
     };
   }
 
@@ -886,6 +895,8 @@ sub _map_nip29_authoritative_input {
       reason     => defined $args{text} ? $args{text} : '',
     );
     my $event_hash = $event->to_hash;
+    push @{$event_hash->{tags}}, [ 'overnet_irc_mask', $args{actor_mask} ]
+      if defined $args{actor_mask};
     _apply_delegated_authority_tags(
       event_hash         => $event_hash,
       actor_pubkey       => $actor_pubkey,
@@ -996,14 +1007,26 @@ sub _map_nip29_authoritative_input {
     };
   }
 
-  if ($mode =~ /\A([+-])([imt])\z/) {
+  if ($mode =~ /\A([+-])([bimt])\z/) {
     my ($direction, $mode_letter) = ($1, $2);
     my $group_metadata = $args{group_metadata} || {};
     return _error('group_metadata must be an object')
       if ref($group_metadata) ne 'HASH';
 
     my %metadata = %{$group_metadata};
-    if ($mode_letter eq 'i') {
+    if ($mode_letter eq 'b') {
+      my $ban_mask = $args{ban_mask};
+      return _error("authoritative NIP-29 MODE $mode requires ban_mask")
+        unless defined $ban_mask && !ref($ban_mask) && length($ban_mask);
+
+      my %ban_masks = map { $_ => 1 } @{_normalized_ban_masks($metadata{ban_masks})};
+      if ($direction eq '+') {
+        $ban_masks{$ban_mask} = 1;
+      } else {
+        delete $ban_masks{$ban_mask};
+      }
+      $metadata{ban_masks} = [ sort keys %ban_masks ];
+    } elsif ($mode_letter eq 'i') {
       $metadata{closed} = $direction eq '+' ? 1 : 0;
     } elsif ($mode_letter eq 'm') {
       $metadata{moderated} = $direction eq '+' ? 1 : 0;
@@ -1063,6 +1086,8 @@ sub _build_group_metadata_event_hash {
     [ 'mode', 'topic-restricted' ]
     if $metadata->{topic_restricted};
   push @{$event_hash->{tags}},
+    map { [ 'ban', $_ ] } @{_normalized_ban_masks($metadata->{ban_masks})};
+  push @{$event_hash->{tags}},
     [ 'topic', $metadata->{topic} ]
     if exists $metadata->{topic};
 
@@ -1105,6 +1130,7 @@ sub _metadata_from_group_event {
     closed           => 0,
     moderated        => 0,
     topic_restricted => 0,
+    ban_masks        => [],
     topic            => undef,
     topic_actor_pubkey => undef,
   );
@@ -1140,6 +1166,10 @@ sub _metadata_from_group_event {
       $metadata{topic_actor_pubkey} = _effective_actor_pubkey_from_group_event($event);
       next;
     }
+    if ($tag->[0] eq 'ban' && @{$tag} >= 2) {
+      push @{$metadata{ban_masks}}, $tag->[1];
+      next;
+    }
     next unless $tag->[0] eq 'mode' && @{$tag} >= 2;
     $metadata{moderated} = 1
       if $tag->[1] eq 'moderated';
@@ -1147,6 +1177,7 @@ sub _metadata_from_group_event {
       if $tag->[1] eq 'topic-restricted';
   }
 
+  $metadata{ban_masks} = _normalized_ban_masks($metadata{ban_masks});
   return \%metadata;
 }
 
@@ -1174,6 +1205,8 @@ sub _build_group_metadata_edit_event_hash {
   push @{$event_hash->{tags}},
     [ 'mode', 'topic-restricted' ]
     if $metadata->{topic_restricted};
+  push @{$event_hash->{tags}},
+    map { [ 'ban', $_ ] } @{_normalized_ban_masks($metadata->{ban_masks})};
   push @{$event_hash->{tags}},
     [ 'topic', $metadata->{topic} ]
     if exists($metadata->{topic}) && defined($metadata->{topic});
@@ -1341,6 +1374,32 @@ sub _presentational_prefix_for_roles {
   return '@' if $roles{'irc.operator'};
   return '+' if $roles{'irc.voice'};
   return '';
+}
+
+sub _normalized_ban_masks {
+  my ($ban_masks) = @_;
+  return [] unless ref($ban_masks) eq 'ARRAY';
+
+  my %seen;
+  return [
+    sort grep {
+      defined($_) && !ref($_) && length($_) && !$seen{$_}++
+    } @{$ban_masks}
+  ];
+}
+
+sub _actor_mask_is_banned {
+  my ($ban_masks, $actor_mask) = @_;
+  return 0 unless defined $actor_mask && !ref($actor_mask) && length($actor_mask);
+
+  for my $ban_mask (@{_normalized_ban_masks($ban_masks)}) {
+    return 1 if Overnet::Authority::HostedChannel::irc_mask_matches(
+      mask  => $ban_mask,
+      value => $actor_mask,
+    );
+  }
+
+  return 0;
 }
 
 sub _error {

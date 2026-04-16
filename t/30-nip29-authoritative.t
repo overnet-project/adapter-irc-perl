@@ -119,6 +119,65 @@ subtest 'authoritative MODE +m maps to a NIP-29 metadata edit with IRC profile m
   );
 };
 
+subtest 'authoritative MODE +b and -b map to NIP-29 metadata edits carrying the IRC ban list' => sub {
+  my $add_result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'MODE',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    mode           => '+b',
+    ban_mask       => 'bob!bob@127.0.0.1',
+    group_metadata => {
+      closed    => 1,
+      ban_masks => ['*!*@evil.example'],
+    },
+    created_at => 1_744_301_002,
+  );
+
+  ok $add_result->{valid}, 'authoritative MODE +b is accepted';
+  is $add_result->{event}{kind}, 9002, 'authoritative MODE +b emits kind 9002';
+  is_deeply(
+    $add_result->{event}{tags},
+    [
+      [ 'h', 'overnet' ],
+      ['closed'],
+      [ 'ban', '*!*@evil.example' ],
+      [ 'ban', 'bob!bob@127.0.0.1' ],
+    ],
+    'authoritative MODE +b preserves existing bans and appends the new IRC ban mask',
+  );
+
+  my $remove_result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'MODE',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    mode           => '-b',
+    ban_mask       => 'bob!bob@127.0.0.1',
+    group_metadata => {
+      closed    => 1,
+      ban_masks => [ 'bob!bob@127.0.0.1', '*!*@evil.example' ],
+    },
+    created_at => 1_744_301_003,
+  );
+
+  ok $remove_result->{valid}, 'authoritative MODE -b is accepted';
+  is $remove_result->{event}{kind}, 9002, 'authoritative MODE -b emits kind 9002';
+  is_deeply(
+    $remove_result->{event}{tags},
+    [
+      [ 'h', 'overnet' ],
+      ['closed'],
+      [ 'ban', '*!*@evil.example' ],
+    ],
+    'authoritative MODE -b removes only the targeted IRC ban mask',
+  );
+};
+
 subtest 'authoritative TOPIC maps to a NIP-29 metadata edit with the IRC topic tag' => sub {
   my $result = $adapter->map_input(
     session_config => _authority_config(),
@@ -797,6 +856,58 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
       },
     },
     'authoritative channel view exposes sorted state, pending invites, presence, and actor-specific admission',
+  );
+};
+
+subtest 'authoritative_channel_view exposes ban masks and rejects banned joins by IRC mask' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_027,
+  )->to_hash;
+  push @{$metadata->{tags}}, [ 'ban', 'bob!bob@127.0.0.1' ];
+
+  my $admins = Net::Nostr::Group->admins(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_028,
+    members    => [
+      {
+        pubkey => 'a' x 64,
+        roles  => ['irc.operator'],
+      },
+    ],
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      actor_pubkey         => 'b' x 64,
+      actor_mask           => 'Bob!bob@127.0.0.1',
+      authoritative_events => [
+        $admins,
+        $metadata,
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'authoritative channel view derivation succeeds for ban enforcement';
+  is_deeply(
+    $result->{view}[0]{ban_masks},
+    ['bob!bob@127.0.0.1'],
+    'authoritative channel view exposes the current authoritative IRC ban list',
+  );
+  is_deeply(
+    $result->{view}[0]{admission},
+    {
+      allowed => JSON::PP::false,
+      member  => JSON::PP::false,
+      reason  => '+b',
+    },
+    'authoritative admission rejects a join whose IRC mask matches the ban list',
   );
 };
 
