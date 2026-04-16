@@ -138,6 +138,37 @@ subtest 'authoritative INVITE maps to a NIP-29 create-invite event draft' => sub
   is $result->{event}{content}, '', 'authoritative INVITE uses empty content by default';
 };
 
+subtest 'authoritative JOIN can target a delegated signer while preserving the effective actor' => sub {
+  my $result = $adapter->map_input(
+    session_config      => _authority_config(),
+    command             => 'JOIN',
+    network             => 'irc.example.test',
+    target              => '#overnet',
+    nick                => 'bob',
+    actor_pubkey        => 'b' x 64,
+    signing_pubkey      => 'd' x 64,
+    authority_event_id  => 'e' x 64,
+    authority_sequence  => 7,
+    invite_code         => 'invite-bob',
+    created_at          => 1_744_301_004,
+  );
+
+  ok $result->{valid}, 'delegated authoritative JOIN is accepted';
+  is $result->{event}{kind}, 9021, 'delegated authoritative JOIN emits kind 9021';
+  is $result->{event}{pubkey}, 'd' x 64, 'delegated authoritative JOIN uses the delegated signer pubkey';
+  is_deeply(
+    $result->{event}{tags},
+    [
+      [ 'h', 'overnet' ],
+      [ 'code', 'invite-bob' ],
+      [ 'overnet_actor', 'b' x 64 ],
+      [ 'overnet_authority', 'e' x 64 ],
+      [ 'overnet_sequence', 7 ],
+    ],
+    'delegated authoritative JOIN preserves the effective actor, authority grant reference, and session sequence',
+  );
+};
+
 subtest 'derive authoritative channel state reconstructs IRC-facing state from NIP-29 events' => sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,
@@ -312,6 +343,88 @@ subtest 'derive authoritative channel state accepts a matching invite code plus 
       },
     ],
     'matching invite plus join request produces derived local membership for the invited pubkey',
+  );
+};
+
+subtest 'derive authoritative channel state uses overnet_actor for delegated join requests' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_030,
+    closed     => 1,
+  )->to_hash;
+
+  my $admins = Net::Nostr::Group->admins(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_031,
+    members    => [
+      {
+        pubkey => 'a' x 64,
+        roles  => ['irc.operator'],
+      },
+    ],
+  )->to_hash;
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_032,
+    members    => [
+      'a' x 64,
+    ],
+  )->to_hash;
+
+  my $invite = Net::Nostr::Group->create_invite(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_033,
+  )->to_hash;
+  push @{$invite->{tags}}, [ 'p', 'b' x 64 ];
+
+  my $delegated_join = Net::Nostr::Group->join_request(
+    pubkey     => 'd' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_034,
+  )->to_hash;
+  push @{$delegated_join->{tags}},
+    [ 'overnet_actor', 'b' x 64 ],
+    [ 'overnet_authority', 'e' x 64 ];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_state',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [
+        $metadata,
+        $admins,
+        $members,
+        $invite,
+        $delegated_join,
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'delegated authoritative state derivation succeeds';
+  is_deeply(
+    $result->{state}[0]{members},
+    [
+      {
+        pubkey                => 'a' x 64,
+        roles                 => ['irc.operator'],
+        presentational_prefix => '@',
+      },
+      {
+        pubkey                => 'b' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+    ],
+    'delegated join requests admit the effective actor pubkey rather than the delegated signer',
   );
 };
 

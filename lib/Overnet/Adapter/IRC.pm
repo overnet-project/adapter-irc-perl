@@ -593,7 +593,7 @@ sub derive_authoritative_channel_state {
       next unless defined $invite_code;
       next unless exists $pending_invites{$invite_code};
 
-      my $joiner_pubkey = $event->pubkey;
+      my $joiner_pubkey = _effective_actor_pubkey_from_group_event($event);
       next unless defined $joiner_pubkey && length $joiner_pubkey;
 
       my $invite = $pending_invites{$invite_code};
@@ -671,6 +671,18 @@ sub _map_nip29_authoritative_input {
   my $actor_pubkey = $args{actor_pubkey};
   return _error('authoritative NIP-29 mapping requires actor_pubkey')
     unless defined $actor_pubkey && $actor_pubkey =~ /\A[0-9a-f]{64}\z/;
+  my $signing_pubkey = $args{signing_pubkey};
+  my $authority_event_id = $args{authority_event_id};
+  my $authority_sequence = $args{authority_sequence};
+  if (defined $signing_pubkey || defined $authority_event_id || defined $authority_sequence) {
+    return _error('authoritative NIP-29 delegated signing requires signing_pubkey')
+      unless defined $signing_pubkey && $signing_pubkey =~ /\A[0-9a-f]{64}\z/;
+    return _error('authoritative NIP-29 delegated signing requires authority_event_id')
+      unless defined $authority_event_id && $authority_event_id =~ /\A[0-9a-f]{64}\z/;
+    return _error('authoritative NIP-29 delegated signing requires authority_sequence')
+      unless defined $authority_sequence && !ref($authority_sequence) && $authority_sequence =~ /\A[1-9]\d*\z/;
+  }
+  my $event_pubkey = defined $signing_pubkey ? $signing_pubkey : $actor_pubkey;
 
   if ($command eq 'KICK') {
     my $target_pubkey = $args{target_pubkey};
@@ -678,15 +690,23 @@ sub _map_nip29_authoritative_input {
       unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/;
 
     my $event = Net::Nostr::Group->remove_user(
-      pubkey     => $actor_pubkey,
+      pubkey     => $event_pubkey,
       group_id   => $group_id,
       target     => $target_pubkey,
       created_at => $created_at + 0,
       reason     => defined $args{text} ? $args{text} : '',
     );
+    my $event_hash = $event->to_hash;
+    _apply_delegated_authority_tags(
+      event_hash         => $event_hash,
+      actor_pubkey       => $actor_pubkey,
+      signing_pubkey     => $signing_pubkey,
+      authority_event_id => $authority_event_id,
+      authority_sequence => $authority_sequence,
+    );
     return {
       valid => 1,
-      event => $event->to_hash,
+      event => $event_hash,
     };
   }
 
@@ -700,7 +720,7 @@ sub _map_nip29_authoritative_input {
       unless defined $invite_code && !ref($invite_code) && length($invite_code);
 
     my $event = Net::Nostr::Group->create_invite(
-      pubkey     => $actor_pubkey,
+      pubkey     => $event_pubkey,
       group_id   => $group_id,
       code       => $invite_code,
       created_at => $created_at + 0,
@@ -708,6 +728,13 @@ sub _map_nip29_authoritative_input {
     );
     my $event_hash = $event->to_hash;
     push @{$event_hash->{tags}}, [ 'p', $target_pubkey ];
+    _apply_delegated_authority_tags(
+      event_hash         => $event_hash,
+      actor_pubkey       => $actor_pubkey,
+      signing_pubkey     => $signing_pubkey,
+      authority_event_id => $authority_event_id,
+      authority_sequence => $authority_sequence,
+    );
 
     return {
       valid => 1,
@@ -717,19 +744,27 @@ sub _map_nip29_authoritative_input {
 
   if ($command eq 'JOIN') {
     my $invite_code = $args{invite_code};
-    return _error('authoritative NIP-29 JOIN requires invite_code')
-      unless defined $invite_code && !ref($invite_code) && length($invite_code);
+    return _error('authoritative NIP-29 JOIN invite_code must be a non-empty string when supplied')
+      if defined($invite_code) && (ref($invite_code) || !length($invite_code));
 
     my $event = Net::Nostr::Group->join_request(
-      pubkey     => $actor_pubkey,
+      pubkey     => $event_pubkey,
       group_id   => $group_id,
       created_at => $created_at + 0,
-      code       => $invite_code,
+      (defined $invite_code ? (code => $invite_code) : ()),
       reason     => defined $args{text} ? $args{text} : '',
+    );
+    my $event_hash = $event->to_hash;
+    _apply_delegated_authority_tags(
+      event_hash         => $event_hash,
+      actor_pubkey       => $actor_pubkey,
+      signing_pubkey     => $signing_pubkey,
+      authority_event_id => $authority_event_id,
+      authority_sequence => $authority_sequence,
     );
     return {
       valid => 1,
-      event => $event->to_hash,
+      event => $event_hash,
     };
   }
 
@@ -761,15 +796,23 @@ sub _map_nip29_authoritative_input {
     }
 
     my $event = Net::Nostr::Group->put_user(
-      pubkey     => $actor_pubkey,
+      pubkey     => $event_pubkey,
       group_id   => $group_id,
       target     => $target_pubkey,
       created_at => $created_at + 0,
       roles      => [ _sorted_roles(keys %roles) ],
     );
+    my $event_hash = $event->to_hash;
+    _apply_delegated_authority_tags(
+      event_hash         => $event_hash,
+      actor_pubkey       => $actor_pubkey,
+      signing_pubkey     => $signing_pubkey,
+      authority_event_id => $authority_event_id,
+      authority_sequence => $authority_sequence,
+    );
     return {
       valid => 1,
-      event => $event->to_hash,
+      event => $event_hash,
     };
   }
 
@@ -789,7 +832,7 @@ sub _map_nip29_authoritative_input {
     }
 
     my $event = Net::Nostr::Group->edit_metadata(
-      pubkey     => $actor_pubkey,
+      pubkey     => $event_pubkey,
       group_id   => $group_id,
       created_at => $created_at + 0,
       (defined $metadata{name} ? (name => $metadata{name}) : ()),
@@ -808,6 +851,13 @@ sub _map_nip29_authoritative_input {
     push @{$event_hash->{tags}},
       [ 'mode', 'topic-restricted' ]
       if $metadata{topic_restricted};
+    _apply_delegated_authority_tags(
+      event_hash         => $event_hash,
+      actor_pubkey       => $actor_pubkey,
+      signing_pubkey     => $signing_pubkey,
+      authority_event_id => $authority_event_id,
+      authority_sequence => $authority_sequence,
+    );
 
     return {
       valid => 1,
@@ -926,6 +976,32 @@ sub _invite_code_from_group_join_request_event {
   }
 
   return undef;
+}
+
+sub _effective_actor_pubkey_from_group_event {
+  my ($event) = @_;
+
+  for my $tag (@{$event->tags || []}) {
+    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
+    next unless $tag->[0] eq 'overnet_actor';
+    return $tag->[1]
+      if defined $tag->[1] && $tag->[1] =~ /\A[0-9a-f]{64}\z/;
+  }
+
+  return $event->pubkey;
+}
+
+sub _apply_delegated_authority_tags {
+  my (%args) = @_;
+  my $event_hash = $args{event_hash};
+  my $signing_pubkey = $args{signing_pubkey};
+  return unless defined $signing_pubkey;
+
+  push @{$event_hash->{tags}},
+    [ 'overnet_actor', $args{actor_pubkey} ],
+    [ 'overnet_authority', $args{authority_event_id} ],
+    [ 'overnet_sequence', 0 + $args{authority_sequence} ];
+  return;
 }
 
 sub _sorted_roles {
