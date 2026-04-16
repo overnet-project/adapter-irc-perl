@@ -136,7 +136,7 @@ sub map_input {
   my ($kind, $event_type, $object_type, $object_id, $origin, $body);
 
   if (($session_config->{authority_profile} || '') eq 'nip29'
-      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'INVITE' || $command eq 'JOIN' || $command eq 'PART')
+      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'TOPIC' || $command eq 'INVITE' || $command eq 'JOIN' || $command eq 'PART')
       && $is_channel_target) {
     return $self->_map_nip29_authoritative_input(
       %args,
@@ -486,6 +486,8 @@ sub derive_authoritative_channel_state {
         group_id          => $view->{group_id},
         group_ref         => $view->{group_ref},
         channel_modes     => $view->{channel_modes},
+        (exists $view->{topic} ? (topic => $view->{topic}) : ()),
+        (exists $view->{topic_actor_pubkey} ? (topic_actor_pubkey => $view->{topic_actor_pubkey}) : ()),
         supported_roles   => [ @{$view->{supported_roles} || []} ],
         members           => [
           map { +{
@@ -537,6 +539,8 @@ sub derive_authoritative_channel_view {
     closed           => 0,
     moderated        => 0,
     topic_restricted => 0,
+    topic            => undef,
+    topic_actor_pubkey => undef,
   );
   my %pending_invites;
   my @supported_roles;
@@ -715,6 +719,8 @@ sub derive_authoritative_channel_view {
       group_id => $group_id,
     ),
     channel_modes   => $channel_modes,
+    (defined($metadata{topic}) ? (topic => $metadata{topic}) : ()),
+    (defined($metadata{topic_actor_pubkey}) ? (topic_actor_pubkey => $metadata{topic_actor_pubkey}) : ()),
     supported_roles => [ @supported_roles ],
     members         => \@derived_members,
     present_members => \@derived_present_members,
@@ -878,6 +884,32 @@ sub _map_nip29_authoritative_input {
     };
   }
 
+  if ($command eq 'TOPIC') {
+    return _error('TOPIC text is required')
+      unless defined $args{text};
+
+    my $group_metadata = $args{group_metadata} || {};
+    return _error('group_metadata must be an object')
+      if ref($group_metadata) ne 'HASH';
+
+    my %metadata = %{$group_metadata};
+    $metadata{topic} = $args{text};
+
+    return {
+      valid => 1,
+      event => _build_group_metadata_edit_event_hash(
+        event_pubkey        => $event_pubkey,
+        group_id            => $group_id,
+        created_at          => $created_at + 0,
+        metadata            => \%metadata,
+        actor_pubkey        => $actor_pubkey,
+        signing_pubkey      => $signing_pubkey,
+        authority_event_id  => $authority_event_id,
+        authority_sequence  => $authority_sequence,
+      ),
+    };
+  }
+
   return _error('Unsupported authoritative IRC command')
     unless $command eq 'MODE';
 
@@ -941,37 +973,18 @@ sub _map_nip29_authoritative_input {
       $metadata{topic_restricted} = $direction eq '+' ? 1 : 0;
     }
 
-    my $event = Net::Nostr::Group->edit_metadata(
-      pubkey     => $event_pubkey,
-      group_id   => $group_id,
-      created_at => $created_at + 0,
-      (defined $metadata{name} ? (name => $metadata{name}) : ()),
-      (defined $metadata{picture} ? (picture => $metadata{picture}) : ()),
-      (defined $metadata{about} ? (about => $metadata{about}) : ()),
-      ($metadata{private} ? (private => 1) : ()),
-      ($metadata{closed} ? (closed => 1) : ()),
-      ($metadata{restricted} ? (restricted => 1) : ()),
-      ($metadata{hidden} ? (hidden => 1) : ()),
-    );
-
-    my $event_hash = $event->to_hash;
-    push @{$event_hash->{tags}},
-      [ 'mode', 'moderated' ]
-      if $metadata{moderated};
-    push @{$event_hash->{tags}},
-      [ 'mode', 'topic-restricted' ]
-      if $metadata{topic_restricted};
-    _apply_delegated_authority_tags(
-      event_hash         => $event_hash,
-      actor_pubkey       => $actor_pubkey,
-      signing_pubkey     => $signing_pubkey,
-      authority_event_id => $authority_event_id,
-      authority_sequence => $authority_sequence,
-    );
-
     return {
       valid => 1,
-      event => $event_hash,
+      event => _build_group_metadata_edit_event_hash(
+        event_pubkey        => $event_pubkey,
+        group_id            => $group_id,
+        created_at          => $created_at + 0,
+        metadata            => \%metadata,
+        actor_pubkey        => $actor_pubkey,
+        signing_pubkey      => $signing_pubkey,
+        authority_event_id  => $authority_event_id,
+        authority_sequence  => $authority_sequence,
+      ),
     };
   }
 
@@ -1010,6 +1023,8 @@ sub _metadata_from_group_event {
     closed           => 0,
     moderated        => 0,
     topic_restricted => 0,
+    topic            => undef,
+    topic_actor_pubkey => undef,
   );
 
   my $parsed = eval {
@@ -1038,6 +1053,11 @@ sub _metadata_from_group_event {
       $metadata{closed} = 1;
       next;
     }
+    if ($tag->[0] eq 'topic') {
+      $metadata{topic} = @{$tag} >= 2 ? $tag->[1] : '';
+      $metadata{topic_actor_pubkey} = _effective_actor_pubkey_from_group_event($event);
+      next;
+    }
     next unless $tag->[0] eq 'mode' && @{$tag} >= 2;
     $metadata{moderated} = 1
       if $tag->[1] eq 'moderated';
@@ -1046,6 +1066,44 @@ sub _metadata_from_group_event {
   }
 
   return \%metadata;
+}
+
+sub _build_group_metadata_edit_event_hash {
+  my (%args) = @_;
+  my $metadata = $args{metadata} || {};
+
+  my $event = Net::Nostr::Group->edit_metadata(
+    pubkey     => $args{event_pubkey},
+    group_id   => $args{group_id},
+    created_at => $args{created_at} + 0,
+    (defined $metadata->{name} ? (name => $metadata->{name}) : ()),
+    (defined $metadata->{picture} ? (picture => $metadata->{picture}) : ()),
+    (defined $metadata->{about} ? (about => $metadata->{about}) : ()),
+    ($metadata->{private} ? (private => 1) : ()),
+    ($metadata->{closed} ? (closed => 1) : ()),
+    ($metadata->{restricted} ? (restricted => 1) : ()),
+    ($metadata->{hidden} ? (hidden => 1) : ()),
+  );
+
+  my $event_hash = $event->to_hash;
+  push @{$event_hash->{tags}},
+    [ 'mode', 'moderated' ]
+    if $metadata->{moderated};
+  push @{$event_hash->{tags}},
+    [ 'mode', 'topic-restricted' ]
+    if $metadata->{topic_restricted};
+  push @{$event_hash->{tags}},
+    [ 'topic', $metadata->{topic} ]
+    if exists($metadata->{topic}) && defined($metadata->{topic});
+  _apply_delegated_authority_tags(
+    event_hash         => $event_hash,
+    actor_pubkey       => $args{actor_pubkey},
+    signing_pubkey     => $args{signing_pubkey},
+    authority_event_id => $args{authority_event_id},
+    authority_sequence => $args{authority_sequence},
+  );
+
+  return $event_hash;
 }
 
 sub _target_and_roles_from_group_member_event {

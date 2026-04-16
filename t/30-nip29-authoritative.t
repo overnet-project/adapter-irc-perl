@@ -110,6 +110,38 @@ subtest 'authoritative MODE +m maps to a NIP-29 metadata edit with IRC profile m
   );
 };
 
+subtest 'authoritative TOPIC maps to a NIP-29 metadata edit with the IRC topic tag' => sub {
+  my $result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'TOPIC',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    text           => 'Authoritative topic',
+    group_metadata => {
+      closed           => 1,
+      moderated        => 1,
+      topic_restricted => 1,
+    },
+    created_at => 1_744_301_002,
+  );
+
+  ok $result->{valid}, 'authoritative TOPIC is accepted';
+  is $result->{event}{kind}, 9002, 'authoritative TOPIC emits kind 9002';
+  is_deeply(
+    $result->{event}{tags},
+    [
+      [ 'h', 'overnet' ],
+      ['closed'],
+      [ 'mode', 'moderated' ],
+      [ 'mode', 'topic-restricted' ],
+      [ 'topic', 'Authoritative topic' ],
+    ],
+    'authoritative TOPIC preserves existing metadata flags and carries the IRC topic tag',
+  );
+};
+
 subtest 'authoritative INVITE maps to a NIP-29 create-invite event draft' => sub {
   my $result = $adapter->map_input(
     session_config => _authority_config(),
@@ -543,6 +575,7 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
     closed     => 1,
   )->to_hash;
   push @{$metadata->{tags}}, [ 'mode', 'moderated' ], [ 'mode', 'topic-restricted' ];
+  push @{$metadata->{tags}}, [ 'topic', 'Current authoritative topic' ], [ 'overnet_actor', 'a' x 64 ];
 
   my $roles = Net::Nostr::Group->roles(
     pubkey     => 'f' x 64,
@@ -645,6 +678,8 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
       group_id          => 'overnet',
       group_ref         => "groups.example.test'overnet",
       channel_modes     => '+imnt',
+      topic             => 'Current authoritative topic',
+      topic_actor_pubkey => 'a' x 64,
       supported_roles   => [ 'irc.operator', 'irc.voice' ],
       members           => [
         {
