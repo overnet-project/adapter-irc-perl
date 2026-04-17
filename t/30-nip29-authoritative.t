@@ -245,6 +245,41 @@ subtest 'authoritative DELETE maps to a NIP-29 metadata edit with the tombstone 
   );
 };
 
+subtest 'authoritative UNDELETE maps to a NIP-29 metadata edit that removes the tombstone status tag' => sub {
+  my $result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'UNDELETE',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    group_metadata => {
+      closed           => 1,
+      moderated        => 1,
+      topic_restricted => 1,
+      ban_masks        => ['*!*@evil.example'],
+      topic            => 'Authoritative topic',
+      tombstoned       => 1,
+    },
+    created_at => 1_744_301_002,
+  );
+
+  ok $result->{valid}, 'authoritative UNDELETE is accepted';
+  is $result->{event}{kind}, 9002, 'authoritative UNDELETE emits kind 9002';
+  is_deeply(
+    $result->{event}{tags},
+    [
+      [ 'h', 'overnet' ],
+      ['closed'],
+      [ 'mode', 'moderated' ],
+      [ 'mode', 'topic-restricted' ],
+      [ 'ban', '*!*@evil.example' ],
+      [ 'topic', 'Authoritative topic' ],
+    ],
+    'authoritative UNDELETE preserves retained metadata and omits the tombstone status tag',
+  );
+};
+
 subtest 'authoritative INVITE maps to a NIP-29 create-invite event draft' => sub {
   my $result = $adapter->map_input(
     session_config => _authority_config(),
@@ -1146,6 +1181,110 @@ subtest 'derive authoritative channel view treats a tombstoned hosted channel as
   ok !$result->{view}[0]{admission}{allowed}, 'tombstoned authoritative channels reject JOIN admission';
   is $result->{view}[0]{admission}{reason}, 'deleted',
     'tombstoned authoritative channels expose a deleted admission reason';
+};
+
+subtest 'derive authoritative channel view restores retained metadata and durable membership after UNDELETE while clearing presence and invites' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_010,
+    closed     => 1,
+  )->to_hash;
+  push @{$metadata->{tags}}, [ 'topic', 'Retained topic' ];
+
+  my $operator = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'a' x 64,
+    created_at => 1_744_301_011,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $member = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'b' x 64,
+    created_at => 1_744_301_012,
+    roles      => [],
+  )->to_hash;
+
+  my $invite = Net::Nostr::Group->create_invite(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-carol',
+    created_at => 1_744_301_013,
+  )->to_hash;
+  push @{$invite->{tags}}, [ 'p', 'c' x 64 ];
+
+  my $join = Net::Nostr::Group->join_request(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_014,
+  )->to_hash;
+  push @{$join->{tags}}, [ 'overnet_actor', 'a' x 64 ];
+
+  my $tombstone = Net::Nostr::Group->edit_metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_015,
+    closed     => 1,
+  )->to_hash;
+  push @{$tombstone->{tags}}, [ 'topic', 'Retained topic' ];
+  push @{$tombstone->{tags}}, [ 'status', 'tombstoned' ];
+
+  my $undelete = Net::Nostr::Group->edit_metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_016,
+    closed     => 1,
+  )->to_hash;
+  push @{$undelete->{tags}}, [ 'topic', 'Retained topic' ];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network            => 'irc.example.test',
+      target             => '#overnet',
+      actor_pubkey       => 'b' x 64,
+      authoritative_events => [
+        $metadata,
+        $operator,
+        $member,
+        $invite,
+        $join,
+        $tombstone,
+        $undelete,
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'reactivated authoritative channel view derives successfully';
+  ok !$result->{view}[0]{tombstoned}, 'the reactivated authoritative channel view is no longer marked tombstoned';
+  is $result->{view}[0]{channel_modes}, '+in',
+    'reactivated authoritative channels retain the pre-delete closed mode';
+  is $result->{view}[0]{topic}, 'Retained topic',
+    'reactivated authoritative channels retain the prior topic metadata';
+  is_deeply $result->{view}[0]{members}, [
+    {
+      pubkey                => 'a' x 64,
+      roles                 => ['irc.operator'],
+      presentational_prefix => '@',
+    },
+    {
+      pubkey                => 'b' x 64,
+      roles                 => [],
+      presentational_prefix => '',
+    },
+  ], 'reactivated authoritative channels restore retained durable membership';
+  is_deeply $result->{view}[0]{present_members}, [],
+    'reactivated authoritative channels clear pre-delete present-member state';
+  is_deeply $result->{view}[0]{pending_invites}, [],
+    'reactivated authoritative channels clear pre-delete pending invites';
+  ok $result->{view}[0]{admission}{member}, 'retained members remain authoritative members after UNDELETE';
+  ok $result->{view}[0]{admission}{allowed}, 'retained members may JOIN again after UNDELETE';
+  is $result->{view}[0]{admission}{reason}, '',
+    'reactivated authoritative channels do not report a join denial reason for retained members';
 };
 
 done_testing;

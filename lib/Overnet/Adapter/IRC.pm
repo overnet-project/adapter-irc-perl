@@ -87,7 +87,8 @@ sub map_input {
       || $command eq 'KICK'
       || $command eq 'NICK'
       || $command eq 'MODE'
-      || $command eq 'DELETE';
+      || $command eq 'DELETE'
+      || $command eq 'UNDELETE';
 
   my $network = $args{network};
   return _error('IRC network is required')
@@ -138,7 +139,7 @@ sub map_input {
   my ($kind, $event_type, $object_type, $object_id, $origin, $body);
 
   if (($session_config->{authority_profile} || '') eq 'nip29'
-      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'TOPIC' || $command eq 'INVITE' || $command eq 'JOIN' || $command eq 'PART' || $command eq 'DELETE')
+      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'TOPIC' || $command eq 'INVITE' || $command eq 'JOIN' || $command eq 'PART' || $command eq 'DELETE' || $command eq 'UNDELETE')
       && $is_channel_target) {
     return $self->_map_nip29_authoritative_input(
       %args,
@@ -147,7 +148,7 @@ sub map_input {
   }
 
   return _error("Unsupported IRC command: $command")
-    if $command eq 'INVITE' || $command eq 'DELETE';
+    if $command eq 'INVITE' || $command eq 'DELETE' || $command eq 'UNDELETE';
 
   if ($command eq 'NICK') {
     return _error('NICK new_nick is required')
@@ -500,6 +501,15 @@ sub derive_authoritative_channel_state {
             presentational_prefix => $_->{presentational_prefix},
           } } @{$view->{members} || []}
         ],
+        (ref($view->{retained_members}) eq 'ARRAY' ? (
+          retained_members => [
+            map { +{
+              pubkey                => $_->{pubkey},
+              roles                 => [ @{$_->{roles} || []} ],
+              presentational_prefix => $_->{presentational_prefix},
+            } } @{$view->{retained_members}}
+          ],
+        ) : ()),
       },
     ],
   };
@@ -572,6 +582,10 @@ sub derive_authoritative_channel_view {
         %metadata,
         %{_metadata_from_group_event($event)},
       );
+      if ($metadata{tombstoned}) {
+        %present_members = ();
+        %pending_invites = ();
+      }
       next;
     }
 
@@ -703,6 +717,14 @@ sub derive_authoritative_channel_view {
       presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
     }
   } sort keys %members;
+  my @derived_retained_members = map {
+    my $member = $members{$_};
+    {
+      pubkey                => $member->{pubkey},
+      roles                 => [ @{$member->{roles} || []} ],
+      presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
+    }
+  } sort keys %members;
   my @derived_present_members = map {
     my $member = $members{$_}
       or next;
@@ -742,6 +764,7 @@ sub derive_authoritative_channel_view {
     members         => \@derived_members,
     present_members => \@derived_present_members,
     pending_invites => \@derived_pending_invites,
+    ($metadata{tombstoned} ? (retained_members => \@derived_retained_members) : ()),
     ($metadata{tombstoned} ? (tombstoned => JSON::PP::true) : ()),
   );
 
@@ -983,6 +1006,29 @@ sub _map_nip29_authoritative_input {
 
     my %metadata = %{$group_metadata};
     $metadata{tombstoned} = 1;
+
+    return {
+      valid => 1,
+      event => _build_group_metadata_edit_event_hash(
+        event_pubkey        => $event_pubkey,
+        group_id            => $group_id,
+        created_at          => $created_at + 0,
+        metadata            => \%metadata,
+        actor_pubkey        => $actor_pubkey,
+        signing_pubkey      => $signing_pubkey,
+        authority_event_id  => $authority_event_id,
+        authority_sequence  => $authority_sequence,
+      ),
+    };
+  }
+
+  if ($command eq 'UNDELETE') {
+    my $group_metadata = $args{group_metadata} || {};
+    return _error('group_metadata must be an object')
+      if ref($group_metadata) ne 'HASH';
+
+    my %metadata = %{$group_metadata};
+    delete $metadata{tombstoned};
 
     return {
       valid => 1,
