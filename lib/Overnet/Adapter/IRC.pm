@@ -310,6 +310,12 @@ sub derive {
       session_config => $args{session_config},
     );
   }
+  if ($operation eq 'authoritative_join_admission') {
+    return $self->derive_authoritative_join_admission(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
   if ($operation eq 'authoritative_channel_state') {
     return $self->derive_authoritative_channel_state(
       %{$input},
@@ -512,6 +518,111 @@ sub derive_authoritative_channel_state {
         ) : ()),
       },
     ],
+  };
+}
+
+sub derive_authoritative_join_admission {
+  my ($self, %args) = @_;
+
+  my $session_config = ref($args{session_config}) eq 'HASH'
+    ? $args{session_config}
+    : {};
+  return _error('authoritative_join_admission requires session_config.authority_profile = nip29')
+    unless ($session_config->{authority_profile} || '') eq 'nip29';
+
+  my $network = $args{network};
+  return _error('IRC network is required')
+    unless defined $network && length $network;
+
+  my $target = $args{target};
+  return _error('IRC target is required')
+    unless defined $target && length $target;
+  return _error('authoritative_join_admission target must be a channel')
+    unless $target =~ /\A[#&]/;
+
+  my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
+    network        => $network,
+    session_config => $session_config,
+    target         => $target,
+  );
+  return _error($error) if defined $error;
+
+  my $authoritative_events = $args{authoritative_events};
+  return _error('authoritative_events must be an array')
+    unless ref($authoritative_events) eq 'ARRAY';
+
+  my $actor_pubkey = $args{actor_pubkey};
+  return _error('actor_pubkey must be a 64-character hex pubkey when supplied')
+    if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/);
+  my $actor_mask = $args{actor_mask};
+  return _error('actor_mask must be a non-empty string when supplied')
+    if defined($actor_mask) && (ref($actor_mask) || !length($actor_mask));
+
+  my %admission = (
+    operation         => 'authoritative_join_admission',
+    authority_profile => 'nip29',
+    object_type       => 'chat.channel',
+    object_id         => "irc:$network:$target",
+    group_host        => $group_host,
+    group_id          => $group_id,
+    group_ref         => Net::Nostr::Group->format_id(
+      host     => $group_host,
+      group_id => $group_id,
+    ),
+    allowed        => JSON::PP::false,
+    member         => JSON::PP::false,
+    present        => JSON::PP::false,
+    create_channel => JSON::PP::false,
+    auth_required  => JSON::PP::false,
+    reason         => '',
+  );
+
+  if (!@{$authoritative_events}) {
+    $admission{allowed} = defined($actor_pubkey) ? JSON::PP::true : JSON::PP::false;
+    $admission{create_channel} = defined($actor_pubkey) ? JSON::PP::true : JSON::PP::false;
+    $admission{auth_required} = defined($actor_pubkey) ? JSON::PP::false : JSON::PP::true;
+    $admission{reason} = defined($actor_pubkey) ? '' : 'auth_required';
+
+    return {
+      valid     => 1,
+      admission => [ \%admission ],
+    };
+  }
+
+  my $view_result = $self->derive_authoritative_channel_view(%args);
+  return $view_result unless $view_result->{valid};
+
+  my $view = $view_result->{view}[0];
+  if (defined($actor_pubkey) && ref($view->{admission}) eq 'HASH') {
+    my $present = scalar grep {
+      ref($_) eq 'HASH'
+        && defined($_->{pubkey})
+        && $_->{pubkey} eq $actor_pubkey
+    } @{$view->{present_members} || []};
+
+    $admission{allowed} = $view->{admission}{allowed} ? JSON::PP::true : JSON::PP::false;
+    $admission{member} = $view->{admission}{member} ? JSON::PP::true : JSON::PP::false;
+    $admission{present} = $present ? JSON::PP::true : JSON::PP::false;
+    $admission{reason} = defined($view->{admission}{reason}) ? $view->{admission}{reason} : '';
+    $admission{invite_code} = $view->{admission}{invite_code}
+      if defined $view->{admission}{invite_code};
+    $admission{deleted} = JSON::PP::true
+      if $view->{admission}{deleted};
+  } elsif ($view->{tombstoned}) {
+    $admission{deleted} = JSON::PP::true;
+    $admission{reason} = 'deleted';
+  } else {
+    $admission{allowed} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/
+      ? JSON::PP::false
+      : JSON::PP::true;
+    $admission{reason} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/
+      ? '+i'
+      : '';
+  }
+
+  return {
+    valid     => 1,
+    admission => [ \%admission ],
   };
 }
 

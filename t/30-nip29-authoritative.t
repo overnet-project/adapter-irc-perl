@@ -1041,6 +1041,234 @@ subtest 'authoritative_channel_view exposes ban masks and rejects banned joins b
   );
 };
 
+subtest 'authoritative_join_admission allows an authenticated first join to create an absent hosted channel' => sub {
+  my $group_id = Overnet::Authority::HostedChannel::authoritative_group_id(
+    network => 'irc.example.test',
+    channel => '#fresh',
+  );
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _dynamic_authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#fresh',
+      authoritative_events => [],
+      actor_pubkey         => 'a' x 64,
+      actor_mask           => 'alice!alice@127.0.0.1',
+    },
+  );
+
+  ok $result->{valid}, 'join admission derivation succeeds for an absent hosted channel';
+  is_deeply(
+    $result->{admission}[0],
+    {
+      operation         => 'authoritative_join_admission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#fresh',
+      group_host        => 'groups.example.test',
+      group_id          => $group_id,
+      group_ref         => "groups.example.test'$group_id",
+      allowed           => JSON::PP::true,
+      member            => JSON::PP::false,
+      present           => JSON::PP::false,
+      create_channel    => JSON::PP::true,
+      auth_required     => JSON::PP::false,
+      reason            => '',
+    },
+    'authenticated first join may create an absent hosted authoritative channel',
+  );
+};
+
+subtest 'authoritative_join_admission reports auth_required for an absent hosted channel without an actor binding' => sub {
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _dynamic_authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#fresh',
+      authoritative_events => [],
+    },
+  );
+
+  ok $result->{valid}, 'join admission derivation succeeds without an actor binding';
+  is_deeply(
+    $result->{admission}[0],
+    {
+      operation         => 'authoritative_join_admission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#fresh',
+      group_host        => 'groups.example.test',
+      group_id          => Overnet::Authority::HostedChannel::authoritative_group_id(
+        network => 'irc.example.test',
+        channel => '#fresh',
+      ),
+      group_ref         => "groups.example.test'" . Overnet::Authority::HostedChannel::authoritative_group_id(
+        network => 'irc.example.test',
+        channel => '#fresh',
+      ),
+      allowed           => JSON::PP::false,
+      member            => JSON::PP::false,
+      present           => JSON::PP::false,
+      create_channel    => JSON::PP::false,
+      auth_required     => JSON::PP::true,
+      reason            => 'auth_required',
+    },
+    'absent hosted channels require authenticated actor binding before creation',
+  );
+};
+
+subtest 'authoritative_join_admission returns invite-mediated admission for a closed channel' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_031,
+    closed     => 1,
+  )->to_hash;
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_032,
+    members    => [
+      'a' x 64,
+    ],
+  )->to_hash;
+
+  my $invite = Net::Nostr::Group->create_invite(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_033,
+  )->to_hash;
+  push @{$invite->{tags}}, [ 'p', 'b' x 64 ];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [
+        $metadata,
+        $members,
+        $invite,
+      ],
+      actor_pubkey => 'b' x 64,
+      actor_mask   => 'bob!bob@127.0.0.1',
+    },
+  );
+
+  ok $result->{valid}, 'join admission derivation succeeds for a closed invited channel';
+  is_deeply(
+    $result->{admission}[0],
+    {
+      operation         => 'authoritative_join_admission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::true,
+      member            => JSON::PP::false,
+      present           => JSON::PP::false,
+      create_channel    => JSON::PP::false,
+      auth_required     => JSON::PP::false,
+      invite_code       => 'invite-bob',
+      reason            => '',
+    },
+    'closed authoritative channels surface invite-mediated join admission symbolically',
+  );
+};
+
+subtest 'authoritative_join_admission returns symbolic banned and deleted denials' => sub {
+  my $banned_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_034,
+    closed     => 1,
+  )->to_hash;
+  push @{$banned_metadata->{tags}}, [ 'ban', 'bob!bob@127.0.0.1' ];
+
+  my $banned = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $banned_metadata ],
+      actor_pubkey         => 'b' x 64,
+      actor_mask           => 'bob!bob@127.0.0.1',
+    },
+  );
+
+  ok $banned->{valid}, 'join admission derivation succeeds for a banned actor';
+  is_deeply(
+    $banned->{admission}[0],
+    {
+      operation         => 'authoritative_join_admission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::false,
+      member            => JSON::PP::false,
+      present           => JSON::PP::false,
+      create_channel    => JSON::PP::false,
+      auth_required     => JSON::PP::false,
+      reason            => '+b',
+    },
+    'banned joins are denied with a symbolic +b reason',
+  );
+
+  my $deleted_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_035,
+    closed     => 1,
+  )->to_hash;
+  push @{$deleted_metadata->{tags}}, [ 'status', 'tombstoned' ];
+
+  my $deleted = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $deleted_metadata ],
+      actor_pubkey         => 'b' x 64,
+      actor_mask           => 'bob!bob@127.0.0.1',
+    },
+  );
+
+  ok $deleted->{valid}, 'join admission derivation succeeds for a tombstoned channel';
+  is_deeply(
+    $deleted->{admission}[0],
+    {
+      operation         => 'authoritative_join_admission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::false,
+      member            => JSON::PP::false,
+      present           => JSON::PP::false,
+      create_channel    => JSON::PP::false,
+      auth_required     => JSON::PP::false,
+      deleted           => JSON::PP::true,
+      reason            => 'deleted',
+    },
+    'tombstoned channels are denied with a symbolic deleted reason',
+  );
+};
+
 subtest 'authoritative_channel_state remains a projection of authoritative_channel_view' => sub {
   my $members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,
