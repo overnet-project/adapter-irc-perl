@@ -86,7 +86,8 @@ sub map_input {
       || $command eq 'QUIT'
       || $command eq 'KICK'
       || $command eq 'NICK'
-      || $command eq 'MODE';
+      || $command eq 'MODE'
+      || $command eq 'DELETE';
 
   my $network = $args{network};
   return _error('IRC network is required')
@@ -137,7 +138,7 @@ sub map_input {
   my ($kind, $event_type, $object_type, $object_id, $origin, $body);
 
   if (($session_config->{authority_profile} || '') eq 'nip29'
-      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'TOPIC' || $command eq 'INVITE' || $command eq 'JOIN' || $command eq 'PART')
+      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'TOPIC' || $command eq 'INVITE' || $command eq 'JOIN' || $command eq 'PART' || $command eq 'DELETE')
       && $is_channel_target) {
     return $self->_map_nip29_authoritative_input(
       %args,
@@ -146,7 +147,7 @@ sub map_input {
   }
 
   return _error("Unsupported IRC command: $command")
-    if $command eq 'INVITE';
+    if $command eq 'INVITE' || $command eq 'DELETE';
 
   if ($command eq 'NICK') {
     return _error('NICK new_nick is required')
@@ -490,6 +491,7 @@ sub derive_authoritative_channel_state {
         (ref($view->{ban_masks}) eq 'ARRAY' && @{$view->{ban_masks}} ? (ban_masks => [ @{$view->{ban_masks}} ]) : ()),
         (exists $view->{topic} ? (topic => $view->{topic}) : ()),
         (exists $view->{topic_actor_pubkey} ? (topic_actor_pubkey => $view->{topic_actor_pubkey}) : ()),
+        ($view->{tombstoned} ? (tombstoned => JSON::PP::true) : ()),
         supported_roles   => [ @{$view->{supported_roles} || []} ],
         members           => [
           map { +{
@@ -548,6 +550,7 @@ sub derive_authoritative_channel_view {
     ban_masks        => [],
     topic            => undef,
     topic_actor_pubkey => undef,
+    tombstoned       => 0,
   );
   my %pending_invites;
   my @supported_roles;
@@ -714,6 +717,12 @@ sub derive_authoritative_channel_view {
     \%invite;
   } sort keys %pending_invites;
 
+  if ($metadata{tombstoned}) {
+    @derived_members = ();
+    @derived_present_members = ();
+    @derived_pending_invites = ();
+  }
+
   my %view = (
     operation         => 'authoritative_channel_view',
     authority_profile => 'nip29',
@@ -733,6 +742,7 @@ sub derive_authoritative_channel_view {
     members         => \@derived_members,
     present_members => \@derived_present_members,
     pending_invites => \@derived_pending_invites,
+    ($metadata{tombstoned} ? (tombstoned => JSON::PP::true) : ()),
   );
 
   if (defined $actor_pubkey) {
@@ -742,10 +752,17 @@ sub derive_authoritative_channel_view {
       ? _actor_mask_is_banned($metadata{ban_masks}, $actor_mask)
       : 0;
     $view{admission} = {
-      allowed     => $banned ? JSON::PP::false : ($member || $invite || !$metadata{closed} ? JSON::PP::true : JSON::PP::false),
-      member      => $member ? JSON::PP::true : JSON::PP::false,
-      (!$banned && defined($invite) ? (invite_code => $invite->{code}) : ()),
-      reason      => $banned ? '+b' : ($member || $invite || !$metadata{closed} ? '' : '+i'),
+      allowed     => $metadata{tombstoned}
+        ? JSON::PP::false
+        : ($banned ? JSON::PP::false : ($member || $invite || !$metadata{closed} ? JSON::PP::true : JSON::PP::false)),
+      member      => $metadata{tombstoned}
+        ? JSON::PP::false
+        : ($member ? JSON::PP::true : JSON::PP::false),
+      ($metadata{tombstoned} ? (deleted => JSON::PP::true) : ()),
+      (!$metadata{tombstoned} && !$banned && defined($invite) ? (invite_code => $invite->{code}) : ()),
+      reason      => $metadata{tombstoned}
+        ? 'deleted'
+        : ($banned ? '+b' : ($member || $invite || !$metadata{closed} ? '' : '+i')),
     };
   }
 
@@ -959,6 +976,29 @@ sub _map_nip29_authoritative_input {
     };
   }
 
+  if ($command eq 'DELETE') {
+    my $group_metadata = $args{group_metadata} || {};
+    return _error('group_metadata must be an object')
+      if ref($group_metadata) ne 'HASH';
+
+    my %metadata = %{$group_metadata};
+    $metadata{tombstoned} = 1;
+
+    return {
+      valid => 1,
+      event => _build_group_metadata_edit_event_hash(
+        event_pubkey        => $event_pubkey,
+        group_id            => $group_id,
+        created_at          => $created_at + 0,
+        metadata            => \%metadata,
+        actor_pubkey        => $actor_pubkey,
+        signing_pubkey      => $signing_pubkey,
+        authority_event_id  => $authority_event_id,
+        authority_sequence  => $authority_sequence,
+      ),
+    };
+  }
+
   return _error('Unsupported authoritative IRC command')
     unless $command eq 'MODE';
 
@@ -1090,6 +1130,9 @@ sub _build_group_metadata_event_hash {
   push @{$event_hash->{tags}},
     [ 'topic', $metadata->{topic} ]
     if exists $metadata->{topic};
+  push @{$event_hash->{tags}},
+    [ 'status', 'tombstoned' ]
+    if $metadata->{tombstoned};
 
   _apply_delegated_authority_tags(
     event_hash         => $event_hash,
@@ -1133,6 +1176,7 @@ sub _metadata_from_group_event {
     ban_masks        => [],
     topic            => undef,
     topic_actor_pubkey => undef,
+    tombstoned       => 0,
   );
 
   my $parsed = eval {
@@ -1168,6 +1212,11 @@ sub _metadata_from_group_event {
     }
     if ($tag->[0] eq 'ban' && @{$tag} >= 2) {
       push @{$metadata{ban_masks}}, $tag->[1];
+      next;
+    }
+    if ($tag->[0] eq 'status' && @{$tag} >= 2) {
+      $metadata{tombstoned} = 1
+        if $tag->[1] eq 'tombstoned';
       next;
     }
     next unless $tag->[0] eq 'mode' && @{$tag} >= 2;
@@ -1210,6 +1259,9 @@ sub _build_group_metadata_edit_event_hash {
   push @{$event_hash->{tags}},
     [ 'topic', $metadata->{topic} ]
     if exists($metadata->{topic}) && defined($metadata->{topic});
+  push @{$event_hash->{tags}},
+    [ 'status', 'tombstoned' ]
+    if $metadata->{tombstoned};
   _apply_delegated_authority_tags(
     event_hash         => $event_hash,
     actor_pubkey       => $args{actor_pubkey},
