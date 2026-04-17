@@ -316,6 +316,18 @@ sub derive {
       session_config => $args{session_config},
     );
   }
+  if ($operation eq 'authoritative_speak_permission') {
+    return $self->derive_authoritative_speak_permission(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
+  if ($operation eq 'authoritative_topic_permission') {
+    return $self->derive_authoritative_topic_permission(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
   if ($operation eq 'authoritative_channel_state') {
     return $self->derive_authoritative_channel_state(
       %{$input},
@@ -626,6 +638,84 @@ sub derive_authoritative_join_admission {
   };
 }
 
+sub derive_authoritative_speak_permission {
+  my ($self, %args) = @_;
+
+  my ($group_host, $group_id, $view, $error) = _authoritative_permission_view($self, %args);
+  return _error($error) if defined $error;
+
+  my $actor_pubkey = $args{actor_pubkey};
+  my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
+  my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
+  my %roles = map { $_ => 1 } @roles;
+  my $moderated = ($view->{channel_modes} || '') =~ /\+[^ ]*m/ ? 1 : 0;
+
+  my %permission = (
+    operation         => 'authoritative_speak_permission',
+    authority_profile => 'nip29',
+    object_type       => 'chat.channel',
+    object_id         => $view->{object_id},
+    group_host        => $group_host,
+    group_id          => $group_id,
+    group_ref         => $view->{group_ref},
+    allowed           => JSON::PP::false,
+    roles             => [ @roles ],
+    presentational_prefix => _presentational_prefix_for_roles(\@roles),
+    reason            => '',
+  );
+
+  if ($view->{tombstoned}) {
+    $permission{reason} = 'deleted';
+  } elsif (!$moderated || $roles{'irc.operator'} || $roles{'irc.voice'}) {
+    $permission{allowed} = JSON::PP::true;
+  } else {
+    $permission{reason} = '+m';
+  }
+
+  return {
+    valid      => 1,
+    permission => [ \%permission ],
+  };
+}
+
+sub derive_authoritative_topic_permission {
+  my ($self, %args) = @_;
+
+  my ($group_host, $group_id, $view, $error) = _authoritative_permission_view($self, %args);
+  return _error($error) if defined $error;
+
+  my $actor_pubkey = $args{actor_pubkey};
+  my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
+  my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
+  my %roles = map { $_ => 1 } @roles;
+  my $topic_restricted = ($view->{channel_modes} || '') =~ /\+[^ ]*t/ ? 1 : 0;
+
+  my %permission = (
+    operation         => 'authoritative_topic_permission',
+    authority_profile => 'nip29',
+    object_type       => 'chat.channel',
+    object_id         => $view->{object_id},
+    group_host        => $group_host,
+    group_id          => $group_id,
+    group_ref         => $view->{group_ref},
+    allowed           => JSON::PP::false,
+    reason            => '',
+  );
+
+  if ($view->{tombstoned}) {
+    $permission{reason} = 'deleted';
+  } elsif (!$topic_restricted || $roles{'irc.operator'}) {
+    $permission{allowed} = JSON::PP::true;
+  } else {
+    $permission{reason} = '+t';
+  }
+
+  return {
+    valid      => 1,
+    permission => [ \%permission ],
+  };
+}
+
 sub derive_authoritative_channel_view {
   my ($self, %args) = @_;
 
@@ -897,6 +987,63 @@ sub derive_authoritative_channel_view {
     valid => 1,
     view  => [ \%view ],
   };
+}
+
+sub _authoritative_permission_view {
+  my ($self, %args) = @_;
+
+  my $session_config = ref($args{session_config}) eq 'HASH'
+    ? $args{session_config}
+    : {};
+  return (undef, undef, undef, 'authoritative permission derivation requires session_config.authority_profile = nip29')
+    unless ($session_config->{authority_profile} || '') eq 'nip29';
+
+  my $network = $args{network};
+  return (undef, undef, undef, 'IRC network is required')
+    unless defined $network && length $network;
+
+  my $target = $args{target};
+  return (undef, undef, undef, 'IRC target is required')
+    unless defined $target && length $target;
+  return (undef, undef, undef, 'authoritative permission target must be a channel')
+    unless $target =~ /\A[#&]/;
+
+  my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
+    network        => $network,
+    session_config => $session_config,
+    target         => $target,
+  );
+  return (undef, undef, undef, $error) if defined $error;
+
+  my $authoritative_events = $args{authoritative_events};
+  return (undef, undef, undef, 'authoritative_events must be an array')
+    unless ref($authoritative_events) eq 'ARRAY';
+  return (undef, undef, undef, 'actor_pubkey is required')
+    unless defined($args{actor_pubkey}) && !ref($args{actor_pubkey}) && $args{actor_pubkey} =~ /\A[0-9a-f]{64}\z/;
+  return (undef, undef, undef, 'authoritative state unavailable')
+    unless @{$authoritative_events};
+
+  my $view_result = $self->derive_authoritative_channel_view(%args);
+  return (undef, undef, undef, $view_result->{error}) unless $view_result->{valid};
+  my $view = $view_result->{view}[0];
+  return (undef, undef, undef, 'authoritative channel view is required')
+    unless ref($view) eq 'HASH';
+
+  return ($group_host, $group_id, $view, undef);
+}
+
+sub _member_for_pubkey {
+  my ($members, $pubkey) = @_;
+  return undef unless ref($members) eq 'ARRAY';
+  return undef unless defined $pubkey && !ref($pubkey) && length($pubkey);
+
+  for my $member (@{$members}) {
+    next unless ref($member) eq 'HASH';
+    next unless defined $member->{pubkey} && $member->{pubkey} eq $pubkey;
+    return $member;
+  }
+
+  return undef;
 }
 
 sub _map_nip29_authoritative_input {

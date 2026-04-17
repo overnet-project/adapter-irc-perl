@@ -1269,6 +1269,185 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
   );
 };
 
+subtest 'authoritative_speak_permission enforces moderated channel voice and operator exemptions' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_040,
+  )->to_hash;
+  push @{$metadata->{tags}}, [ 'mode', 'moderated' ];
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_041,
+    members    => [
+      'a' x 64,
+      'b' x 64,
+      'c' x 64,
+    ],
+  )->to_hash;
+
+  my $ops = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_042,
+    target     => 'a' x 64,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $voice = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_043,
+    target     => 'b' x 64,
+    roles      => ['irc.voice'],
+  )->to_hash;
+
+  my $voiced = $adapter->derive(
+    operation      => 'authoritative_speak_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      actor_pubkey         => 'b' x 64,
+    },
+  );
+
+  ok $voiced->{valid}, 'speak permission derivation succeeds for voiced members';
+  is_deeply(
+    $voiced->{permission}[0],
+    {
+      operation         => 'authoritative_speak_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::true,
+      roles             => ['irc.voice'],
+      presentational_prefix => '+',
+      reason            => '',
+    },
+    'voiced members may speak in moderated authoritative channels',
+  );
+
+  my $unvoiced = $adapter->derive(
+    operation      => 'authoritative_speak_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      actor_pubkey         => 'c' x 64,
+    },
+  );
+
+  ok $unvoiced->{valid}, 'speak permission derivation succeeds for unvoiced members';
+  is_deeply(
+    $unvoiced->{permission}[0],
+    {
+      operation         => 'authoritative_speak_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::false,
+      roles             => [],
+      presentational_prefix => '',
+      reason            => '+m',
+    },
+    'unvoiced non-operators are denied speak permission in moderated authoritative channels',
+  );
+};
+
+subtest 'authoritative_topic_permission enforces topic-restricted operator rules' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_044,
+  )->to_hash;
+  push @{$metadata->{tags}}, [ 'mode', 'topic-restricted' ];
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_045,
+    members    => [
+      'a' x 64,
+      'b' x 64,
+    ],
+  )->to_hash;
+
+  my $ops = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_046,
+    target     => 'a' x 64,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $operator = $adapter->derive(
+    operation      => 'authoritative_topic_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $ops ],
+      actor_pubkey         => 'a' x 64,
+    },
+  );
+
+  ok $operator->{valid}, 'topic permission derivation succeeds for operators';
+  is_deeply(
+    $operator->{permission}[0],
+    {
+      operation         => 'authoritative_topic_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::true,
+      reason            => '',
+    },
+    'operators may change topic on topic-restricted authoritative channels',
+  );
+
+  my $member = $adapter->derive(
+    operation      => 'authoritative_topic_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $ops ],
+      actor_pubkey         => 'b' x 64,
+    },
+  );
+
+  ok $member->{valid}, 'topic permission derivation succeeds for non-operators';
+  is_deeply(
+    $member->{permission}[0],
+    {
+      operation         => 'authoritative_topic_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::false,
+      reason            => '+t',
+    },
+    'non-operators are denied topic permission on topic-restricted authoritative channels',
+  );
+};
+
 subtest 'authoritative_channel_state remains a projection of authoritative_channel_view' => sub {
   my $members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,
