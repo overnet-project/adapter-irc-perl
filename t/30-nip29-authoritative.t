@@ -605,6 +605,66 @@ subtest 'derive authoritative channel state accepts a matching invite code plus 
   );
 };
 
+subtest 'derive authoritative channel state does not treat 39002 membership snapshots as exhaustive by default' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_020,
+    closed     => 1,
+  )->to_hash;
+
+  my $initial_members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_021,
+    members    => [
+      'a' x 64,
+      'b' x 64,
+    ],
+  )->to_hash;
+
+  my $partial_members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_022,
+    members    => [
+      'a' x 64,
+    ],
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_state',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [
+        $metadata,
+        $initial_members,
+        $partial_members,
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'authoritative state derivation succeeds for partial 39002 snapshots';
+  is_deeply(
+    $result->{state}[0]{members},
+    [
+      {
+        pubkey                => 'a' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+      {
+        pubkey                => 'b' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+    ],
+    'later partial 39002 snapshots do not silently delete earlier derived members',
+  );
+};
+
 subtest 'derive authoritative channel state removes local membership after a leave request' => sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,

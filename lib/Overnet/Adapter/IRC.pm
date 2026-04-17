@@ -603,13 +603,6 @@ sub derive_authoritative_channel_view {
 
     if ($event->kind == 39002) {
       my $member_info = Net::Nostr::Group->members_from_event($event);
-      my %snapshot = map { $_ => 1 } @{$member_info->{members} || []};
-
-      for my $pubkey (keys %members) {
-        delete $members{$pubkey}
-          unless $snapshot{$pubkey};
-      }
-
       for my $pubkey (@{$member_info->{members} || []}) {
         $members{$pubkey} ||= {
           pubkey => $pubkey,
