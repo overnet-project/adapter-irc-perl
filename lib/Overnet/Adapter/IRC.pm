@@ -1383,7 +1383,6 @@ sub _effective_actor_pubkey_from_group_event {
 sub _sorted_authoritative_group_events {
   my @raw_events = @_;
   my @decorated;
-  my $index = 0;
 
   for my $raw_event (@raw_events) {
     die "authoritative events must be objects\n"
@@ -1396,19 +1395,35 @@ sub _sorted_authoritative_group_events {
     my ($authority, $sequence) = _authority_ordering_from_event($event);
     push @decorated, [
       $event->created_at + 0,
+      _authoritative_semantic_phase_for_event($event),
       $authority,
       $sequence,
-      $index++,
+      lc($event->id || ''),
       $event,
     ];
   }
 
-  return map { $_->[4] } sort {
+  return map { $_->[5] } sort {
     $a->[0] <=> $b->[0]
-      || $a->[1] cmp $b->[1]
-      || $a->[2] <=> $b->[2]
-      || $a->[3] <=> $b->[3]
+      || (
+        length($a->[2]) && length($b->[2]) && $a->[2] eq $b->[2] && $a->[3] > 0 && $b->[3] > 0
+          ? ($a->[3] <=> $b->[3])
+          : 0
+      )
+      || $a->[1] <=> $b->[1]
+      || $a->[4] cmp $b->[4]
   } @decorated;
+}
+
+sub _authoritative_semantic_phase_for_event {
+  my ($event) = @_;
+  my $kind = $event->kind;
+
+  return 0 if $kind == 9000 || $kind == 9002 || $kind == 9009;
+  return 1 if $kind == 9021;
+  return 2 if $kind == 9001 || $kind == 9022;
+  return 3 if $kind == 39000 || $kind == 39001 || $kind == 39002 || $kind == 39003;
+  return 4;
 }
 
 sub _authority_ordering_from_event {

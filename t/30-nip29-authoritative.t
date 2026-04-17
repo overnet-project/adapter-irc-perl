@@ -1192,6 +1192,162 @@ subtest 'authoritative_channel_view orders same-second invite and join causally 
   );
 };
 
+subtest 'authoritative_channel_view applies same-second invite before join regardless of authority tag ordering' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_043,
+    closed     => 1,
+  )->to_hash;
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_044,
+    members    => [
+      'a' x 64,
+    ],
+  )->to_hash;
+
+  my $invite_bob = Net::Nostr::Group->create_invite(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_045,
+  )->to_hash;
+  push @{$invite_bob->{tags}},
+    [ 'p', 'b' x 64 ],
+    [ 'overnet_actor', 'a' x 64 ],
+    [ 'overnet_authority', 'f' x 64 ],
+    [ 'overnet_sequence', 1 ];
+
+  my $join_bob = Net::Nostr::Group->join_request(
+    pubkey     => '1' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_045,
+  )->to_hash;
+  push @{$join_bob->{tags}},
+    [ 'overnet_actor', 'b' x 64 ],
+    [ 'overnet_authority', '1' x 64 ],
+    [ 'overnet_sequence', 1 ];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [
+        $join_bob,
+        $metadata,
+        $members,
+        $invite_bob,
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'derivation succeeds when same-second invite and join use conflicting authority sort order';
+  is_deeply(
+    $result->{view}[0]{members},
+    [
+      {
+        pubkey                => 'a' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+      {
+        pubkey                => 'b' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+    ],
+    'invite admission still applies before the same-second join even when authority tags sort the other way',
+  );
+  is_deeply(
+    $result->{view}[0]{present_members},
+    [
+      {
+        pubkey                => 'b' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+    ],
+    'same-second invite-plus-join still yields present membership after the semantic invite phase',
+  );
+};
+
+subtest 'authoritative_channel_view applies same-second removal after join regardless of authority tag ordering' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_046,
+  )->to_hash;
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_047,
+    members    => [
+      'a' x 64,
+    ],
+  )->to_hash;
+
+  my $join_bob = Net::Nostr::Group->join_request(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_048,
+  )->to_hash;
+  push @{$join_bob->{tags}},
+    [ 'overnet_actor', 'b' x 64 ],
+    [ 'overnet_authority', 'f' x 64 ],
+    [ 'overnet_sequence', 1 ];
+
+  my $remove_bob = Net::Nostr::Group->remove_user(
+    pubkey     => '1' x 64,
+    group_id   => 'overnet',
+    target     => 'b' x 64,
+    created_at => 1_744_301_048,
+  )->to_hash;
+  push @{$remove_bob->{tags}},
+    [ 'overnet_actor', 'a' x 64 ],
+    [ 'overnet_authority', '1' x 64 ],
+    [ 'overnet_sequence', 1 ];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [
+        $join_bob,
+        $metadata,
+        $members,
+        $remove_bob,
+      ],
+    },
+  );
+
+  ok $result->{valid}, 'derivation succeeds when same-second join and removal use conflicting authority sort order';
+  is_deeply(
+    $result->{view}[0]{members},
+    [
+      {
+        pubkey                => 'a' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+    ],
+    'same-second removal still applies after the join and removes the member even when authority tags sort first',
+  );
+  is_deeply(
+    $result->{view}[0]{present_members},
+    [],
+    'same-second removal clears present membership after the semantic removal phase',
+  );
+};
+
 subtest 'derive authoritative channel view treats a tombstoned hosted channel as deleted and non-admissible' => sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,
