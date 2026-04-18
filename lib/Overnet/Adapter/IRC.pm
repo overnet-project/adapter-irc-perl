@@ -328,6 +328,18 @@ sub derive {
       session_config => $args{session_config},
     );
   }
+  if ($operation eq 'authoritative_mode_write_permission') {
+    return $self->derive_authoritative_mode_write_permission(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
+  if ($operation eq 'authoritative_channel_action_permission') {
+    return $self->derive_authoritative_channel_action_permission(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
   if ($operation eq 'authoritative_channel_state') {
     return $self->derive_authoritative_channel_state(
       %{$input},
@@ -716,6 +728,135 @@ sub derive_authoritative_topic_permission {
   };
 }
 
+sub derive_authoritative_mode_write_permission {
+  my ($self, %args) = @_;
+
+  my ($group_host, $group_id, $view, $error) = _authoritative_permission_view($self, %args);
+  return _error($error) if defined $error;
+
+  my $mode = $args{mode};
+  return _error('mode is required')
+    unless defined($mode) && !ref($mode) && length($mode);
+  my $mode_args = $args{mode_args};
+  return _error('mode_args must be an array')
+    unless ref($mode_args) eq 'ARRAY';
+
+  my $actor_pubkey = $args{actor_pubkey};
+  my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
+  my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
+  my %roles = map { $_ => 1 } @roles;
+
+  my %permission = (
+    operation         => 'authoritative_mode_write_permission',
+    authority_profile => 'nip29',
+    object_type       => 'chat.channel',
+    object_id         => $view->{object_id},
+    group_host        => $group_host,
+    group_id          => $group_id,
+    group_ref         => $view->{group_ref},
+    allowed           => JSON::PP::false,
+    mode              => $mode,
+    reason            => '',
+  );
+
+  if ($view->{tombstoned}) {
+    $permission{reason} = 'deleted';
+  } elsif (!$roles{'irc.operator'}) {
+    $permission{reason} = 'not_operator';
+  } elsif ($mode =~ /\A[+-][ov]\z/) {
+    return _error('mode_args[0] target pubkey is required for channel role mode writes')
+      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[0-9a-f]{64}\z/;
+    my $target_pubkey = $mode_args->[0];
+    my $target_member = _member_for_pubkey($view->{members}, $target_pubkey);
+    $permission{allowed} = JSON::PP::true;
+    $permission{target_pubkey} = $target_pubkey;
+    $permission{current_roles} = ref($target_member) eq 'HASH'
+      ? [ @{$target_member->{roles} || []} ]
+      : [];
+  } elsif ($mode =~ /\A[+-][b]\z/) {
+    return _error('mode_args[0] ban mask is required for channel ban mode writes')
+      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
+    $permission{allowed} = JSON::PP::true;
+    $permission{normalized_ban_mask} = $mode_args->[0];
+    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
+  } elsif ($mode =~ /\A[+-][imt]\z/) {
+    $permission{allowed} = JSON::PP::true;
+    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
+  } else {
+    return _error('unsupported authoritative channel mode write');
+  }
+
+  return {
+    valid      => 1,
+    permission => [ \%permission ],
+  };
+}
+
+sub derive_authoritative_channel_action_permission {
+  my ($self, %args) = @_;
+
+  my ($group_host, $group_id, $view, $error) = _authoritative_permission_view($self, %args);
+  return _error($error) if defined $error;
+
+  my $action = $args{action};
+  return _error('action is required')
+    unless defined($action) && !ref($action) && length($action);
+  $action = lc $action;
+  return _error('unsupported authoritative channel action')
+    unless grep { $_ eq $action } qw(kick invite delete undelete);
+
+  my $actor_pubkey = $args{actor_pubkey};
+  my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
+  my $retained_member = _member_for_pubkey($view->{retained_members}, $actor_pubkey);
+  my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
+  my @retained_roles = ref($retained_member) eq 'HASH' ? @{$retained_member->{roles} || []} : ();
+  my %roles = map { $_ => 1 } @roles;
+  my %retained_roles = map { $_ => 1 } @retained_roles;
+
+  my %permission = (
+    operation         => 'authoritative_channel_action_permission',
+    authority_profile => 'nip29',
+    object_type       => 'chat.channel',
+    object_id         => $view->{object_id},
+    group_host        => $group_host,
+    group_id          => $group_id,
+    group_ref         => $view->{group_ref},
+    action            => $action,
+    allowed           => JSON::PP::false,
+    reason            => '',
+  );
+
+  if ($action eq 'undelete') {
+    if (!$view->{tombstoned}) {
+      $permission{reason} = 'not_deleted';
+    } elsif (!$retained_roles{'irc.operator'}) {
+      $permission{reason} = 'not_operator';
+    } else {
+      $permission{allowed} = JSON::PP::true;
+      $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
+    }
+  } elsif ($view->{tombstoned}) {
+    $permission{reason} = 'deleted';
+  } elsif (!$roles{'irc.operator'}) {
+    $permission{reason} = 'not_operator';
+  } else {
+    $permission{allowed} = JSON::PP::true;
+    if ($action eq 'kick' || $action eq 'invite') {
+      return _error('target_pubkey is required for authoritative channel action')
+        unless defined($args{target_pubkey}) && !ref($args{target_pubkey}) && $args{target_pubkey} =~ /\A[0-9a-f]{64}\z/;
+      $permission{target_pubkey} = $args{target_pubkey};
+    }
+    if ($action eq 'delete') {
+      $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
+    }
+  }
+
+  return {
+    valid      => 1,
+    permission => [ \%permission ],
+  };
+}
+
 sub derive_authoritative_channel_view {
   my ($self, %args) = @_;
 
@@ -1030,6 +1171,18 @@ sub _authoritative_permission_view {
     unless ref($view) eq 'HASH';
 
   return ($group_host, $group_id, $view, undef);
+}
+
+sub _group_metadata_from_authoritative_view {
+  my ($view) = @_;
+  return {
+    closed           => ($view->{channel_modes} || '') =~ /\+[^ ]*i/ ? 1 : 0,
+    moderated        => ($view->{channel_modes} || '') =~ /\+[^ ]*m/ ? 1 : 0,
+    topic_restricted => ($view->{channel_modes} || '') =~ /\+[^ ]*t/ ? 1 : 0,
+    ban_masks        => ref($view->{ban_masks}) eq 'ARRAY' ? [ @{$view->{ban_masks}} ] : [],
+    tombstoned       => $view->{tombstoned} ? 1 : 0,
+    (exists($view->{topic}) ? (topic => $view->{topic}) : ()),
+  };
 }
 
 sub _member_for_pubkey {

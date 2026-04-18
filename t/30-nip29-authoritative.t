@@ -1448,6 +1448,281 @@ subtest 'authoritative_topic_permission enforces topic-restricted operator rules
   );
 };
 
+subtest 'authoritative_mode_write_permission resolves operator mode and ban context' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_047,
+  )->to_hash;
+  push @{$metadata->{tags}}, [ 'closed' ];
+  push @{$metadata->{tags}}, [ 'mode', 'moderated' ];
+  push @{$metadata->{tags}}, [ 'mode', 'topic-restricted' ];
+  push @{$metadata->{tags}}, [ 'ban', '*!*@banned.example' ];
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_048,
+    members    => [
+      'a' x 64,
+      'b' x 64,
+    ],
+  )->to_hash;
+
+  my $ops = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_049,
+    target     => 'a' x 64,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $voice = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_050,
+    target     => 'b' x 64,
+    roles      => ['irc.voice'],
+  )->to_hash;
+
+  my $grant_voice = $adapter->derive(
+    operation      => 'authoritative_mode_write_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      actor_pubkey         => 'a' x 64,
+      mode                 => '+v',
+      mode_args            => [ 'b' x 64 ],
+    },
+  );
+
+  ok $grant_voice->{valid}, 'mode permission derivation succeeds for operators';
+  is_deeply(
+    $grant_voice->{permission}[0],
+    {
+      operation         => 'authoritative_mode_write_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::true,
+      mode              => '+v',
+      target_pubkey     => 'b' x 64,
+      current_roles     => ['irc.voice'],
+      reason            => '',
+    },
+    'operator mode writes expose the current target pubkey and roles',
+  );
+
+  my $set_ban = $adapter->derive(
+    operation      => 'authoritative_mode_write_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      actor_pubkey         => 'a' x 64,
+      mode                 => '+b',
+      mode_args            => [ '*!*@new.example' ],
+    },
+  );
+
+  ok $set_ban->{valid}, 'ban mode permission derivation succeeds for operators';
+  is_deeply(
+    $set_ban->{permission}[0],
+    {
+      operation         => 'authoritative_mode_write_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::true,
+      mode              => '+b',
+      normalized_ban_mask => '*!*@new.example',
+      group_metadata    => {
+        closed           => 1,
+        moderated        => 1,
+        topic_restricted => 1,
+        ban_masks        => [ '*!*@banned.example' ],
+        tombstoned       => 0,
+      },
+      reason            => '',
+    },
+    'ban mode writes expose current authoritative metadata for subsequent mapping',
+  );
+
+  my $non_operator = $adapter->derive(
+    operation      => 'authoritative_mode_write_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      actor_pubkey         => 'b' x 64,
+      mode                 => '+m',
+      mode_args            => [],
+    },
+  );
+
+  ok $non_operator->{valid}, 'mode permission derivation still succeeds for non-operators';
+  is_deeply(
+    $non_operator->{permission}[0],
+    {
+      operation         => 'authoritative_mode_write_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      allowed           => JSON::PP::false,
+      mode              => '+m',
+      reason            => 'not_operator',
+    },
+    'non-operators are denied authoritative mode writes with a symbolic reason',
+  );
+};
+
+subtest 'authoritative_channel_action_permission resolves kick, delete, and undelete rules' => sub {
+  my $live_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_051,
+  )->to_hash;
+
+  my $live_members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_052,
+    members    => [
+      'a' x 64,
+      'b' x 64,
+    ],
+  )->to_hash;
+
+  my $live_ops = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_053,
+    target     => 'a' x 64,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $kick = $adapter->derive(
+    operation      => 'authoritative_channel_action_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $live_metadata, $live_members, $live_ops ],
+      actor_pubkey         => 'a' x 64,
+      action               => 'kick',
+      target_pubkey        => 'b' x 64,
+    },
+  );
+
+  ok $kick->{valid}, 'action permission derivation succeeds for kick';
+  is_deeply(
+    $kick->{permission}[0],
+    {
+      operation         => 'authoritative_channel_action_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      action            => 'kick',
+      allowed           => JSON::PP::true,
+      target_pubkey     => 'b' x 64,
+      reason            => '',
+    },
+    'kick permission returns the resolved target context for operators',
+  );
+
+  my $delete = $adapter->derive(
+    operation      => 'authoritative_channel_action_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $live_metadata, $live_members, $live_ops ],
+      actor_pubkey         => 'b' x 64,
+      action               => 'delete',
+    },
+  );
+
+  ok $delete->{valid}, 'action permission derivation still succeeds for rejected delete';
+  is_deeply(
+    $delete->{permission}[0],
+    {
+      operation         => 'authoritative_channel_action_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      action            => 'delete',
+      allowed           => JSON::PP::false,
+      reason            => 'not_operator',
+    },
+    'non-operators are denied authoritative channel actions with a symbolic reason',
+  );
+
+  my $tombstoned = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_054,
+  )->to_hash;
+  push @{$tombstoned->{tags}}, [ 'status', 'tombstoned' ];
+  push @{$tombstoned->{tags}}, [ 'topic', 'retained topic' ];
+
+  my $undelete = $adapter->derive(
+    operation      => 'authoritative_channel_action_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $live_members, $live_ops, $tombstoned ],
+      actor_pubkey         => 'a' x 64,
+      action               => 'undelete',
+    },
+  );
+
+  ok $undelete->{valid}, 'action permission derivation succeeds for undelete';
+  is_deeply(
+    $undelete->{permission}[0],
+    {
+      operation         => 'authoritative_channel_action_permission',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      action            => 'undelete',
+      allowed           => JSON::PP::true,
+      group_metadata    => {
+        closed           => 0,
+        moderated        => 0,
+        topic_restricted => 0,
+        ban_masks        => [],
+        tombstoned       => 1,
+        topic            => 'retained topic',
+      },
+      reason            => '',
+    },
+    'retained operators may undelete and receive the retained metadata context',
+  );
+};
+
 subtest 'authoritative_channel_state remains a projection of authoritative_channel_view' => sub {
   my $members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,
