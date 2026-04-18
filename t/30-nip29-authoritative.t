@@ -1723,6 +1723,136 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
   );
 };
 
+subtest 'authoritative_ban_list_view returns stable normalized authoritative ban masks' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_055,
+  )->to_hash;
+  push @{$metadata->{tags}}, [ 'ban', '*!*@z.example' ];
+  push @{$metadata->{tags}}, [ 'ban', '*!*@a.example' ];
+  push @{$metadata->{tags}}, [ 'ban', '*!*@a.example' ];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_ban_list_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata ],
+    },
+  );
+
+  ok $result->{valid}, 'ban-list view derivation succeeds';
+  is_deeply(
+    $result->{view}[0],
+    {
+      operation         => 'authoritative_ban_list_view',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      ban_masks         => [
+        '*!*@a.example',
+        '*!*@z.example',
+      ],
+    },
+    'ban-list view exposes stable normalized authoritative ban masks',
+  );
+};
+
+subtest 'authoritative_list_entry_view reports list visibility and presentational state' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_056,
+  )->to_hash;
+  push @{$metadata->{tags}}, [ 'topic', 'Authoritative topic' ];
+  push @{$metadata->{tags}}, [ 'mode', 'moderated' ];
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_057,
+    members    => [
+      'a' x 64,
+    ],
+  )->to_hash;
+
+  my $join = Net::Nostr::Group->join_request(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_058,
+  )->to_hash;
+
+  my $visible = $adapter->derive(
+    operation      => 'authoritative_list_entry_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $join ],
+    },
+  );
+
+  ok $visible->{valid}, 'list-entry view derivation succeeds';
+  is_deeply(
+    $visible->{view}[0],
+    {
+      operation         => 'authoritative_list_entry_view',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      channel           => '#overnet',
+      visible_in_list   => JSON::PP::true,
+      channel_modes     => '+mn',
+      visible_users     => 1,
+      topic             => 'Authoritative topic',
+    },
+    'list-entry view exposes canonical list presentation for visible hosted channels',
+  );
+
+  my $tombstoned = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_059,
+  )->to_hash;
+  push @{$tombstoned->{tags}}, [ 'status', 'tombstoned' ];
+
+  my $hidden = $adapter->derive(
+    operation      => 'authoritative_list_entry_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [ $metadata, $members, $join, $tombstoned ],
+    },
+  );
+
+  ok $hidden->{valid}, 'list-entry view derivation succeeds for tombstoned channels';
+  is_deeply(
+    $hidden->{view}[0],
+    {
+      operation         => 'authoritative_list_entry_view',
+      authority_profile => 'nip29',
+      object_type       => 'chat.channel',
+      object_id         => 'irc:irc.example.test:#overnet',
+      group_host        => 'groups.example.test',
+      group_id          => 'overnet',
+      group_ref         => "groups.example.test'overnet",
+      channel           => '#overnet',
+      visible_in_list   => JSON::PP::false,
+      reason            => 'deleted',
+    },
+    'tombstoned hosted channels are suppressed from authoritative LIST output',
+  );
+};
+
 subtest 'authoritative_channel_state remains a projection of authoritative_channel_view' => sub {
   my $members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,

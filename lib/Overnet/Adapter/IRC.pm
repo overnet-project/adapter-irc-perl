@@ -340,6 +340,18 @@ sub derive {
       session_config => $args{session_config},
     );
   }
+  if ($operation eq 'authoritative_ban_list_view') {
+    return $self->derive_authoritative_ban_list_view(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
+  if ($operation eq 'authoritative_list_entry_view') {
+    return $self->derive_authoritative_list_entry_view(
+      %{$input},
+      session_config => $args{session_config},
+    );
+  }
   if ($operation eq 'authoritative_channel_state') {
     return $self->derive_authoritative_channel_state(
       %{$input},
@@ -542,6 +554,66 @@ sub derive_authoritative_channel_state {
         ) : ()),
       },
     ],
+  };
+}
+
+sub derive_authoritative_ban_list_view {
+  my ($self, %args) = @_;
+
+  my $view_result = $self->derive_authoritative_channel_view(%args);
+  return $view_result unless $view_result->{valid};
+
+  my $view = $view_result->{view}[0];
+  return {
+    valid => 1,
+    view  => [
+      {
+        operation         => 'authoritative_ban_list_view',
+        authority_profile => $view->{authority_profile},
+        object_type       => $view->{object_type},
+        object_id         => $view->{object_id},
+        group_host        => $view->{group_host},
+        group_id          => $view->{group_id},
+        group_ref         => $view->{group_ref},
+        ban_masks         => [ @{_normalized_ban_masks($view->{ban_masks})} ],
+      },
+    ],
+  };
+}
+
+sub derive_authoritative_list_entry_view {
+  my ($self, %args) = @_;
+
+  my $view_result = $self->derive_authoritative_channel_view(%args);
+  return $view_result unless $view_result->{valid};
+
+  my $view = $view_result->{view}[0];
+  my $channel = $args{target};
+
+  my %entry = (
+    operation         => 'authoritative_list_entry_view',
+    authority_profile => $view->{authority_profile},
+    object_type       => $view->{object_type},
+    object_id         => $view->{object_id},
+    group_host        => $view->{group_host},
+    group_id          => $view->{group_id},
+    group_ref         => $view->{group_ref},
+    channel           => $channel,
+  );
+
+  if ($view->{tombstoned}) {
+    $entry{visible_in_list} = JSON::PP::false;
+    $entry{reason} = 'deleted';
+  } else {
+    $entry{visible_in_list} = JSON::PP::true;
+    $entry{channel_modes} = $view->{channel_modes};
+    $entry{visible_users} = scalar @{$view->{present_members} || []};
+    $entry{topic} = defined($view->{topic}) ? $view->{topic} : '';
+  }
+
+  return {
+    valid => 1,
+    view  => [ \%entry ],
   };
 }
 
