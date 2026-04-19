@@ -532,6 +532,10 @@ sub derive_authoritative_channel_state {
         group_ref         => $view->{group_ref},
         channel_modes     => $view->{channel_modes},
         (ref($view->{ban_masks}) eq 'ARRAY' && @{$view->{ban_masks}} ? (ban_masks => [ @{$view->{ban_masks}} ]) : ()),
+        (ref($view->{exception_masks}) eq 'ARRAY' && @{$view->{exception_masks}} ? (exception_masks => [ @{$view->{exception_masks}} ]) : ()),
+        (ref($view->{invite_exception_masks}) eq 'ARRAY' && @{$view->{invite_exception_masks}} ? (invite_exception_masks => [ @{$view->{invite_exception_masks}} ]) : ()),
+        (defined($view->{channel_key}) ? (channel_key => $view->{channel_key}) : ()),
+        (defined($view->{user_limit}) ? (user_limit => $view->{user_limit}) : ()),
         (exists $view->{topic} ? (topic => $view->{topic}) : ()),
         (exists $view->{topic_actor_pubkey} ? (topic_actor_pubkey => $view->{topic_actor_pubkey}) : ()),
         ($view->{tombstoned} ? (tombstoned => JSON::PP::true) : ()),
@@ -653,6 +657,9 @@ sub derive_authoritative_join_admission {
   my $actor_mask = $args{actor_mask};
   return _error('actor_mask must be a non-empty string when supplied')
     if defined($actor_mask) && (ref($actor_mask) || !length($actor_mask));
+  my $join_key = $args{join_key};
+  return _error('join_key must be a non-empty string when supplied')
+    if defined($join_key) && (ref($join_key) || !length($join_key));
 
   my %admission = (
     operation         => 'authoritative_join_admission',
@@ -851,6 +858,34 @@ sub derive_authoritative_mode_write_permission {
     $permission{allowed} = JSON::PP::true;
     $permission{normalized_ban_mask} = $mode_args->[0];
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
+  } elsif ($mode =~ /\A[+-][e]\z/) {
+    return _error('mode_args[0] exception mask is required for channel exception mode writes')
+      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
+    $permission{allowed} = JSON::PP::true;
+    $permission{normalized_exception_mask} = $mode_args->[0];
+    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
+  } elsif ($mode =~ /\A[+-][I]\z/) {
+    return _error('mode_args[0] invite exception mask is required for channel invite exception mode writes')
+      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
+    $permission{allowed} = JSON::PP::true;
+    $permission{normalized_invite_exception_mask} = $mode_args->[0];
+    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
+  } elsif ($mode =~ /\A[+-][k]\z/) {
+    if ($mode =~ /\A\+k\z/) {
+      return _error('mode_args[0] channel key is required for +k')
+        unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
+      $permission{channel_key} = $mode_args->[0];
+    }
+    $permission{allowed} = JSON::PP::true;
+    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
+  } elsif ($mode =~ /\A[+-][l]\z/) {
+    if ($mode =~ /\A\+l\z/) {
+      return _error('mode_args[0] user limit is required for +l')
+        unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[1-9][0-9]*\z/;
+      $permission{user_limit} = 0 + $mode_args->[0];
+    }
+    $permission{allowed} = JSON::PP::true;
+    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
   } elsif ($mode =~ /\A[+-][imt]\z/) {
     $permission{allowed} = JSON::PP::true;
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
@@ -964,6 +999,9 @@ sub derive_authoritative_channel_view {
   my $actor_mask = $args{actor_mask};
   return _error('actor_mask must be a non-empty string when supplied')
     if defined($actor_mask) && (ref($actor_mask) || !length($actor_mask));
+  my $join_key = $args{join_key};
+  return _error('join_key must be a non-empty string when supplied')
+    if defined($join_key) && (ref($join_key) || !length($join_key));
 
   my %members;
   my %present_members;
@@ -972,6 +1010,10 @@ sub derive_authoritative_channel_view {
     moderated        => 0,
     topic_restricted => 0,
     ban_masks        => [],
+    exception_masks  => [],
+    invite_exception_masks => [],
+    channel_key      => undef,
+    user_limit       => undef,
     topic            => undef,
     topic_actor_pubkey => undef,
     tombstoned       => 0,
@@ -1111,6 +1153,8 @@ sub derive_authoritative_channel_view {
     '',
     grep { $_ }
       ($metadata{closed} ? 'i' : ''),
+      (defined($metadata{channel_key}) && length($metadata{channel_key}) ? 'k' : ''),
+      (defined($metadata{user_limit}) ? 'l' : ''),
       ($metadata{moderated} ? 'm' : ''),
       'n',
       ($metadata{topic_restricted} ? 't' : ''),
@@ -1165,6 +1209,10 @@ sub derive_authoritative_channel_view {
     ),
     channel_modes   => $channel_modes,
     (@{$metadata{ban_masks} || []} ? (ban_masks => [ @{$metadata{ban_masks}} ]) : ()),
+    (@{$metadata{exception_masks} || []} ? (exception_masks => [ @{$metadata{exception_masks}} ]) : ()),
+    (@{$metadata{invite_exception_masks} || []} ? (invite_exception_masks => [ @{$metadata{invite_exception_masks}} ]) : ()),
+    (defined($metadata{channel_key}) ? (channel_key => $metadata{channel_key}) : ()),
+    (defined($metadata{user_limit}) ? (user_limit => $metadata{user_limit}) : ()),
     (defined($metadata{topic}) ? (topic => $metadata{topic}) : ()),
     (defined($metadata{topic_actor_pubkey}) ? (topic_actor_pubkey => $metadata{topic_actor_pubkey}) : ()),
     supported_roles => [ @supported_roles ],
@@ -1178,21 +1226,33 @@ sub derive_authoritative_channel_view {
   if (defined $actor_pubkey) {
     my $member = $members{$actor_pubkey};
     my $invite = _pending_invite_for_pubkey(\%pending_invites, $actor_pubkey);
-    my $banned = !$member && defined($actor_mask)
-      ? _actor_mask_is_banned($metadata{ban_masks}, $actor_mask)
+    my $excepted = defined($actor_mask)
+      ? _actor_mask_matches_masks($metadata{exception_masks}, $actor_mask)
       : 0;
+    my $invite_excepted = defined($actor_mask)
+      ? _actor_mask_matches_masks($metadata{invite_exception_masks}, $actor_mask)
+      : 0;
+    my $banned = !$member && defined($actor_mask)
+      ? (_actor_mask_matches_masks($metadata{ban_masks}, $actor_mask) && !$excepted)
+      : 0;
+    my $bad_key = !$member
+      && defined($metadata{channel_key})
+      && (!defined($join_key) || $join_key ne $metadata{channel_key});
+    my $channel_full = !$member
+      && defined($metadata{user_limit})
+      && scalar(@derived_present_members) >= $metadata{user_limit};
     $view{admission} = {
       allowed     => $metadata{tombstoned}
         ? JSON::PP::false
-        : ($banned ? JSON::PP::false : ($member || $invite || !$metadata{closed} ? JSON::PP::true : JSON::PP::false)),
+        : ($banned ? JSON::PP::false : ($bad_key ? JSON::PP::false : ($channel_full ? JSON::PP::false : ($member || $invite || $invite_excepted || !$metadata{closed} ? JSON::PP::true : JSON::PP::false)))),
       member      => $metadata{tombstoned}
         ? JSON::PP::false
         : ($member ? JSON::PP::true : JSON::PP::false),
       ($metadata{tombstoned} ? (deleted => JSON::PP::true) : ()),
-      (!$metadata{tombstoned} && !$banned && defined($invite) ? (invite_code => $invite->{code}) : ()),
+      (!$metadata{tombstoned} && !$banned && !$bad_key && !$channel_full && defined($invite) ? (invite_code => $invite->{code}) : ()),
       reason      => $metadata{tombstoned}
         ? 'deleted'
-        : ($banned ? '+b' : ($member || $invite || !$metadata{closed} ? '' : '+i')),
+        : ($banned ? '+b' : ($bad_key ? '+k' : ($channel_full ? '+l' : ($member || $invite || $invite_excepted || !$metadata{closed} ? '' : '+i')))),
     };
   }
 
@@ -1252,6 +1312,10 @@ sub _group_metadata_from_authoritative_view {
     moderated        => ($view->{channel_modes} || '') =~ /\+[^ ]*m/ ? 1 : 0,
     topic_restricted => ($view->{channel_modes} || '') =~ /\+[^ ]*t/ ? 1 : 0,
     ban_masks        => ref($view->{ban_masks}) eq 'ARRAY' ? [ @{$view->{ban_masks}} ] : [],
+    (ref($view->{exception_masks}) eq 'ARRAY' && @{$view->{exception_masks}} ? (exception_masks => [ @{$view->{exception_masks}} ]) : ()),
+    (ref($view->{invite_exception_masks}) eq 'ARRAY' && @{$view->{invite_exception_masks}} ? (invite_exception_masks => [ @{$view->{invite_exception_masks}} ]) : ()),
+    (defined($view->{channel_key}) ? (channel_key => $view->{channel_key}) : ()),
+    (defined($view->{user_limit}) ? (user_limit => $view->{user_limit}) : ()),
     tombstoned       => $view->{tombstoned} ? 1 : 0,
     (exists($view->{topic}) ? (topic => $view->{topic}) : ()),
   };
@@ -1569,7 +1633,7 @@ sub _map_nip29_authoritative_input {
     };
   }
 
-  if ($mode =~ /\A([+-])([bimt])\z/) {
+  if ($mode =~ /\A([+-])([beIklimt])\z/) {
     my ($direction, $mode_letter) = ($1, $2);
     my $group_metadata = $args{group_metadata} || {};
     return _error('group_metadata must be an object')
@@ -1588,6 +1652,48 @@ sub _map_nip29_authoritative_input {
         delete $ban_masks{$ban_mask};
       }
       $metadata{ban_masks} = [ sort keys %ban_masks ];
+    } elsif ($mode_letter eq 'e') {
+      my $exception_mask = $args{exception_mask};
+      return _error("authoritative NIP-29 MODE $mode requires exception_mask")
+        unless defined $exception_mask && !ref($exception_mask) && length($exception_mask);
+
+      my %exception_masks = map { $_ => 1 } @{_normalized_mask_list($metadata{exception_masks})};
+      if ($direction eq '+') {
+        $exception_masks{$exception_mask} = 1;
+      } else {
+        delete $exception_masks{$exception_mask};
+      }
+      $metadata{exception_masks} = [ sort keys %exception_masks ];
+    } elsif ($mode_letter eq 'I') {
+      my $invite_exception_mask = $args{invite_exception_mask};
+      return _error("authoritative NIP-29 MODE $mode requires invite_exception_mask")
+        unless defined $invite_exception_mask && !ref($invite_exception_mask) && length($invite_exception_mask);
+
+      my %invite_exception_masks = map { $_ => 1 } @{_normalized_mask_list($metadata{invite_exception_masks})};
+      if ($direction eq '+') {
+        $invite_exception_masks{$invite_exception_mask} = 1;
+      } else {
+        delete $invite_exception_masks{$invite_exception_mask};
+      }
+      $metadata{invite_exception_masks} = [ sort keys %invite_exception_masks ];
+    } elsif ($mode_letter eq 'k') {
+      if ($direction eq '+') {
+        my $channel_key = $args{channel_key};
+        return _error("authoritative NIP-29 MODE $mode requires channel_key")
+          unless defined $channel_key && !ref($channel_key) && length($channel_key);
+        $metadata{channel_key} = $channel_key;
+      } else {
+        delete $metadata{channel_key};
+      }
+    } elsif ($mode_letter eq 'l') {
+      if ($direction eq '+') {
+        my $user_limit = $args{user_limit};
+        return _error("authoritative NIP-29 MODE $mode requires user_limit")
+          unless defined $user_limit && !ref($user_limit) && $user_limit =~ /\A[1-9][0-9]*\z/;
+        $metadata{user_limit} = 0 + $user_limit;
+      } else {
+        delete $metadata{user_limit};
+      }
     } elsif ($mode_letter eq 'i') {
       $metadata{closed} = $direction eq '+' ? 1 : 0;
     } elsif ($mode_letter eq 'm') {
@@ -1650,6 +1756,16 @@ sub _build_group_metadata_event_hash {
   push @{$event_hash->{tags}},
     map { [ 'ban', $_ ] } @{_normalized_ban_masks($metadata->{ban_masks})};
   push @{$event_hash->{tags}},
+    map { [ 'except', $_ ] } @{_normalized_mask_list($metadata->{exception_masks})};
+  push @{$event_hash->{tags}},
+    map { [ 'invite-except', $_ ] } @{_normalized_mask_list($metadata->{invite_exception_masks})};
+  push @{$event_hash->{tags}},
+    [ 'key', $metadata->{channel_key} ]
+    if defined($metadata->{channel_key}) && length($metadata->{channel_key});
+  push @{$event_hash->{tags}},
+    [ 'limit', 0 + $metadata->{user_limit} ]
+    if defined($metadata->{user_limit});
+  push @{$event_hash->{tags}},
     [ 'topic', $metadata->{topic} ]
     if exists $metadata->{topic};
   push @{$event_hash->{tags}},
@@ -1696,6 +1812,10 @@ sub _metadata_from_group_event {
     moderated        => 0,
     topic_restricted => 0,
     ban_masks        => [],
+    exception_masks  => [],
+    invite_exception_masks => [],
+    channel_key      => undef,
+    user_limit       => undef,
     topic            => undef,
     topic_actor_pubkey => undef,
     tombstoned       => 0,
@@ -1736,6 +1856,22 @@ sub _metadata_from_group_event {
       push @{$metadata{ban_masks}}, $tag->[1];
       next;
     }
+    if ($tag->[0] eq 'except' && @{$tag} >= 2) {
+      push @{$metadata{exception_masks}}, $tag->[1];
+      next;
+    }
+    if ($tag->[0] eq 'invite-except' && @{$tag} >= 2) {
+      push @{$metadata{invite_exception_masks}}, $tag->[1];
+      next;
+    }
+    if ($tag->[0] eq 'key' && @{$tag} >= 2) {
+      $metadata{channel_key} = $tag->[1];
+      next;
+    }
+    if ($tag->[0] eq 'limit' && @{$tag} >= 2 && defined($tag->[1]) && $tag->[1] =~ /\A[1-9][0-9]*\z/) {
+      $metadata{user_limit} = 0 + $tag->[1];
+      next;
+    }
     if ($tag->[0] eq 'status' && @{$tag} >= 2) {
       $metadata{tombstoned} = 1
         if $tag->[1] eq 'tombstoned';
@@ -1749,6 +1885,8 @@ sub _metadata_from_group_event {
   }
 
   $metadata{ban_masks} = _normalized_ban_masks($metadata{ban_masks});
+  $metadata{exception_masks} = _normalized_mask_list($metadata{exception_masks});
+  $metadata{invite_exception_masks} = _normalized_mask_list($metadata{invite_exception_masks});
   return \%metadata;
 }
 
@@ -1778,6 +1916,16 @@ sub _build_group_metadata_edit_event_hash {
     if $metadata->{topic_restricted};
   push @{$event_hash->{tags}},
     map { [ 'ban', $_ ] } @{_normalized_ban_masks($metadata->{ban_masks})};
+  push @{$event_hash->{tags}},
+    map { [ 'except', $_ ] } @{_normalized_mask_list($metadata->{exception_masks})};
+  push @{$event_hash->{tags}},
+    map { [ 'invite-except', $_ ] } @{_normalized_mask_list($metadata->{invite_exception_masks})};
+  push @{$event_hash->{tags}},
+    [ 'key', $metadata->{channel_key} ]
+    if defined($metadata->{channel_key}) && length($metadata->{channel_key});
+  push @{$event_hash->{tags}},
+    [ 'limit', 0 + $metadata->{user_limit} ]
+    if defined($metadata->{user_limit});
   push @{$event_hash->{tags}},
     [ 'topic', $metadata->{topic} ]
     if exists($metadata->{topic}) && defined($metadata->{topic});
@@ -1965,25 +2113,30 @@ sub _presentational_prefix_for_roles {
   return '';
 }
 
-sub _normalized_ban_masks {
-  my ($ban_masks) = @_;
-  return [] unless ref($ban_masks) eq 'ARRAY';
+sub _normalized_mask_list {
+  my ($masks) = @_;
+  return [] unless ref($masks) eq 'ARRAY';
 
   my %seen;
   return [
     sort grep {
       defined($_) && !ref($_) && length($_) && !$seen{$_}++
-    } @{$ban_masks}
+    } @{$masks}
   ];
 }
 
-sub _actor_mask_is_banned {
-  my ($ban_masks, $actor_mask) = @_;
+sub _normalized_ban_masks {
+  my ($ban_masks) = @_;
+  return _normalized_mask_list($ban_masks);
+}
+
+sub _actor_mask_matches_masks {
+  my ($masks, $actor_mask) = @_;
   return 0 unless defined $actor_mask && !ref($actor_mask) && length($actor_mask);
 
-  for my $ban_mask (@{_normalized_ban_masks($ban_masks)}) {
+  for my $mask (@{_normalized_mask_list($masks)}) {
     return 1 if Overnet::Authority::HostedChannel::irc_mask_matches(
-      mask  => $ban_mask,
+      mask  => $mask,
       value => $actor_mask,
     );
   }
