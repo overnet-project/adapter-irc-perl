@@ -605,14 +605,36 @@ sub derive_authoritative_list_entry_view {
     channel           => $channel,
   );
 
+  my $actor_pubkey = $args{actor_pubkey};
+  my $actor_member = defined($actor_pubkey)
+    ? (
+      _member_for_pubkey($view->{members}, $actor_pubkey)
+        || _member_for_pubkey($view->{retained_members}, $actor_pubkey)
+    )
+    : undef;
+  my $private = $view->{private} ? 1 : 0;
+  my $hidden = $view->{hidden} ? 1 : 0;
+  my $restricted = $view->{restricted} ? 1 : 0;
+
   if ($view->{tombstoned}) {
     $entry{visible_in_list} = JSON::PP::false;
     $entry{reason} = 'deleted';
+  } elsif ($hidden && !defined($actor_member)) {
+    $entry{visible_in_list} = JSON::PP::false;
+    $entry{reason} = 'hidden';
   } else {
     $entry{visible_in_list} = JSON::PP::true;
+    ($private ? ($entry{private} = JSON::PP::true) : ());
+    ($hidden ? ($entry{hidden} = JSON::PP::true) : ());
+    ($restricted ? ($entry{restricted} = JSON::PP::true) : ());
     $entry{channel_modes} = $view->{channel_modes};
-    $entry{visible_users} = scalar @{$view->{present_members} || []};
-    $entry{topic} = defined($view->{topic}) ? $view->{topic} : '';
+    if ($private && !defined($actor_member)) {
+      $entry{visible_users} = 0;
+      $entry{topic} = '';
+    } else {
+      $entry{visible_users} = scalar @{$view->{present_members} || []};
+      $entry{topic} = defined($view->{topic}) ? $view->{topic} : '';
+    }
   }
 
   return {
@@ -711,6 +733,10 @@ sub derive_authoritative_join_admission {
       if defined $view->{admission}{invite_code};
     $admission{deleted} = JSON::PP::true
       if $view->{admission}{deleted};
+    $admission{request_join} = JSON::PP::true
+      if $view->{admission}{request_join};
+    $admission{pending_request} = JSON::PP::true
+      if $view->{admission}{pending_request};
   } elsif ($view->{tombstoned}) {
     $admission{deleted} = JSON::PP::true;
     $admission{reason} = 'deleted';
@@ -1019,6 +1045,7 @@ sub derive_authoritative_channel_view {
     tombstoned       => 0,
   );
   my %pending_invites;
+  my %pending_join_requests;
   my @supported_roles;
 
   my @sorted_events = eval { _sorted_authoritative_group_events(@{$authoritative_events}) };
@@ -1041,6 +1068,7 @@ sub derive_authoritative_channel_view {
       if ($metadata{tombstoned}) {
         %present_members = ();
         %pending_invites = ();
+        %pending_join_requests = ();
       }
       next;
     }
@@ -1083,6 +1111,7 @@ sub derive_authoritative_channel_view {
         pubkey => $target_pubkey,
         roles  => [ _sorted_roles(@roles) ],
       };
+      delete $pending_join_requests{$target_pubkey};
       next;
     }
 
@@ -1093,6 +1122,7 @@ sub derive_authoritative_channel_view {
 
       delete $members{$target_pubkey};
       delete $present_members{$target_pubkey};
+      delete $pending_join_requests{$target_pubkey};
       next;
     }
 
@@ -1105,12 +1135,15 @@ sub derive_authoritative_channel_view {
         code => $invite_code,
         (defined $target_pubkey ? (target_pubkey => $target_pubkey) : ()),
       };
+      delete $pending_join_requests{$target_pubkey}
+        if defined $target_pubkey;
       next;
     }
 
     if ($event->kind == 9021) {
       my $invite_code = _invite_code_from_group_join_request_event($event);
       my $joiner_pubkey = _effective_actor_pubkey_from_group_event($event);
+      my $joiner_mask = _irc_mask_from_group_event($event);
       next unless defined $joiner_pubkey && length $joiner_pubkey;
 
       my $joined = 0;
@@ -1133,9 +1166,17 @@ sub derive_authoritative_channel_view {
           roles  => [],
         };
         $joined = 1;
+      } elsif ($metadata{restricted} && !defined($invite_code)) {
+        $pending_join_requests{$joiner_pubkey} = {
+          pubkey => $joiner_pubkey,
+          (defined($joiner_mask) ? (actor_mask => $joiner_mask) : ()),
+        };
       }
 
-      $present_members{$joiner_pubkey} = 1 if $joined;
+      if ($joined) {
+        delete $pending_join_requests{$joiner_pubkey};
+        $present_members{$joiner_pubkey} = 1;
+      }
       next;
     }
 
@@ -1145,6 +1186,7 @@ sub derive_authoritative_channel_view {
 
       delete $members{$leaver_pubkey};
       delete $present_members{$leaver_pubkey};
+      delete $pending_join_requests{$leaver_pubkey};
       next;
     }
   }
@@ -1189,11 +1231,16 @@ sub derive_authoritative_channel_view {
     my %invite = %{$pending_invites{$_}};
     \%invite;
   } sort keys %pending_invites;
+  my @derived_pending_join_requests = map {
+    my %request = %{$pending_join_requests{$_}};
+    \%request;
+  } sort keys %pending_join_requests;
 
   if ($metadata{tombstoned}) {
     @derived_members = ();
     @derived_present_members = ();
     @derived_pending_invites = ();
+    @derived_pending_join_requests = ();
   }
 
   my %view = (
@@ -1215,10 +1262,14 @@ sub derive_authoritative_channel_view {
     (defined($metadata{user_limit}) ? (user_limit => $metadata{user_limit}) : ()),
     (defined($metadata{topic}) ? (topic => $metadata{topic}) : ()),
     (defined($metadata{topic_actor_pubkey}) ? (topic_actor_pubkey => $metadata{topic_actor_pubkey}) : ()),
+    ($metadata{private} ? (private => JSON::PP::true) : ()),
+    ($metadata{restricted} ? (restricted => JSON::PP::true) : ()),
+    ($metadata{hidden} ? (hidden => JSON::PP::true) : ()),
     supported_roles => [ @supported_roles ],
     members         => \@derived_members,
     present_members => \@derived_present_members,
     pending_invites => \@derived_pending_invites,
+    pending_join_requests => \@derived_pending_join_requests,
     ($metadata{tombstoned} ? (retained_members => \@derived_retained_members) : ()),
     ($metadata{tombstoned} ? (tombstoned => JSON::PP::true) : ()),
   );
@@ -1232,6 +1283,7 @@ sub derive_authoritative_channel_view {
     my $invite_excepted = defined($actor_mask)
       ? _actor_mask_matches_masks($metadata{invite_exception_masks}, $actor_mask)
       : 0;
+    my $pending_request = $pending_join_requests{$actor_pubkey};
     my $banned = !$member && defined($actor_mask)
       ? (_actor_mask_matches_masks($metadata{ban_masks}, $actor_mask) && !$excepted)
       : 0;
@@ -1250,9 +1302,11 @@ sub derive_authoritative_channel_view {
         : ($member ? JSON::PP::true : JSON::PP::false),
       ($metadata{tombstoned} ? (deleted => JSON::PP::true) : ()),
       (!$metadata{tombstoned} && !$banned && !$bad_key && !$channel_full && defined($invite) ? (invite_code => $invite->{code}) : ()),
+      (!$metadata{tombstoned} && !$banned && !$bad_key && !$channel_full && !$member && !$invite && !$invite_excepted && $metadata{closed} && $metadata{restricted} && !defined($pending_request) ? (request_join => JSON::PP::true) : ()),
+      (!$metadata{tombstoned} && defined($pending_request) ? (pending_request => JSON::PP::true) : ()),
       reason      => $metadata{tombstoned}
         ? 'deleted'
-        : ($banned ? '+b' : ($bad_key ? '+k' : ($channel_full ? '+l' : ($member || $invite || $invite_excepted || !$metadata{closed} ? '' : '+i')))),
+        : ($banned ? '+b' : ($bad_key ? '+k' : ($channel_full ? '+l' : ($member || $invite || $invite_excepted || !$metadata{closed} ? '' : ($metadata{restricted} ? (defined($pending_request) ? 'join_request_pending' : 'join_request') : '+i'))))),
     };
   }
 
@@ -1311,6 +1365,9 @@ sub _group_metadata_from_authoritative_view {
     closed           => ($view->{channel_modes} || '') =~ /\+[^ ]*i/ ? 1 : 0,
     moderated        => ($view->{channel_modes} || '') =~ /\+[^ ]*m/ ? 1 : 0,
     topic_restricted => ($view->{channel_modes} || '') =~ /\+[^ ]*t/ ? 1 : 0,
+    private          => $view->{private} ? 1 : 0,
+    restricted       => $view->{restricted} ? 1 : 0,
+    hidden           => $view->{hidden} ? 1 : 0,
     ban_masks        => ref($view->{ban_masks}) eq 'ARRAY' ? [ @{$view->{ban_masks}} ] : [],
     (ref($view->{exception_masks}) eq 'ARRAY' && @{$view->{exception_masks}} ? (exception_masks => [ @{$view->{exception_masks}} ]) : ()),
     (ref($view->{invite_exception_masks}) eq 'ARRAY' && @{$view->{invite_exception_masks}} ? (invite_exception_masks => [ @{$view->{invite_exception_masks}} ]) : ()),
@@ -2009,6 +2066,19 @@ sub _effective_actor_pubkey_from_group_event {
   }
 
   return $event->pubkey;
+}
+
+sub _irc_mask_from_group_event {
+  my ($event) = @_;
+
+  for my $tag (@{$event->tags || []}) {
+    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
+    next unless $tag->[0] eq 'overnet_irc_mask';
+    return $tag->[1]
+      if defined($tag->[1]) && !ref($tag->[1]) && length($tag->[1]);
+  }
+
+  return undef;
 }
 
 sub _sorted_authoritative_group_events {
