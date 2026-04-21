@@ -73,7 +73,7 @@ This dist should contain IRC-specific implementation logic only.
 
 Do not copy Overnet core validation rules into this dist unless the adapter specifically needs to enforce them at its own boundary.
 
-Shared core semantics should stay in `overnet-code/`.
+Shared core semantics should stay in `overnet-core-perl/`.
 
 ## Dependencies
 

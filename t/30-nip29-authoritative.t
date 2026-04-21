@@ -5,10 +5,10 @@ use Config;
 use FindBin;
 use File::Spec;
 
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5');
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5', $Config{version});
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'local', 'lib', 'perl5', $Config{version}, $Config{archname});
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-code', 'lib');
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-core-perl', 'local', 'lib', 'perl5');
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-core-perl', 'local', 'lib', 'perl5', $Config{version});
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-core-perl', 'local', 'lib', 'perl5', $Config{version}, $Config{archname});
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-core-perl', 'lib');
 
 use Net::Nostr::Group;
 use Overnet::Authority::HostedChannel ();
@@ -978,6 +978,7 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
           target_pubkey => 'e' x 64,
         },
       ],
+      pending_join_requests => [],
       admission         => {
         allowed     => JSON::PP::true,
         member      => JSON::PP::false,
@@ -1549,6 +1550,9 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
         closed           => 1,
         moderated        => 1,
         topic_restricted => 1,
+        private          => 0,
+        hidden           => 0,
+        restricted       => 0,
         ban_masks        => [ '*!*@banned.example' ],
         tombstoned       => 0,
       },
@@ -1713,6 +1717,9 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
         closed           => 0,
         moderated        => 0,
         topic_restricted => 0,
+        private          => 0,
+        hidden           => 0,
+        restricted       => 0,
         ban_masks        => [],
         tombstoned       => 1,
         topic            => 'retained topic',
