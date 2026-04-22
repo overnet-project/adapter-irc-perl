@@ -1,0 +1,16 @@
+.gitignore
+CLAUDE.md
+cpanfile
+lib/Overnet/Adapter/IRC.pm
+LICENSE
+Makefile.PL
+MANIFEST			This list of files
+MANIFEST.SKIP
+README.md
+t/00-load.t
+t/10-privmsg-fixtures.t
+t/20-derived-presence-fixtures.t
+t/30-nip29-authoritative.t
+t/40-spec-conformance.t
+t/makemaker-metadata.t
+t/manifest-skip-policy.t

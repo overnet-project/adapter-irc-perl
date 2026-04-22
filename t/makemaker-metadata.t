@@ -56,6 +56,7 @@ is_deeply(
         t/00-load.t
         t/30-nip29-authoritative.t
         t/makemaker-metadata.t
+        t/manifest-skip-policy.t
       )
     ),
   },
