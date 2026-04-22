@@ -42,7 +42,7 @@ The current design goal is fidelity to IRC semantics first. Observed IRC actions
 Run tests with:
 
 ```bash
-/home/_73/.local/bin/plx prove -Ilib -v t/
+prove -v t/
 ```
 
 ## Related Repositories
