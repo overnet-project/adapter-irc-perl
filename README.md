@@ -2,7 +2,9 @@
 
 Perl implementation workspace for the Overnet IRC adapter.
 
-This dist is intended to implement the IRC adapter specification from `../overnet-spec/docs/adapters/irc.md`.
+GitHub: <https://github.com/overnet-project/adapter-irc-perl>
+
+This dist is intended to implement the IRC adapter specification from [spec/docs/adapters/irc.md](https://github.com/overnet-project/spec/blob/main/docs/adapters/irc.md).
 
 ## Dependency Policy
 
@@ -40,5 +42,12 @@ The current design goal is fidelity to IRC semantics first. Observed IRC actions
 Run tests with:
 
 ```bash
-/opt/perl-5.42/bin/prove -Ilib -v t/
+/home/_73/.local/bin/plx prove -Ilib -v t/
 ```
+
+## Related Repositories
+
+- [spec](https://github.com/overnet-project/spec)
+- [core-perl](https://github.com/overnet-project/core-perl)
+- [relay-perl](https://github.com/overnet-project/relay-perl)
+- [irc-server](https://github.com/overnet-project/irc-server)
