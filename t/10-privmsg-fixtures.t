@@ -7,14 +7,14 @@ use FindBin;
 use File::Basename;
 use File::Spec;
 
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-core-perl', 'local', 'lib', 'perl5');
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-core-perl', 'local', 'lib', 'perl5', $Config{version});
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'overnet-core-perl', 'local', 'lib', 'perl5', $Config{version}, $Config{archname});
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5');
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version});
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version}, $Config{archname});
 
 use Overnet::Adapter::IRC;
 
 my $adapter = Overnet::Adapter::IRC->new;
-my $fixtures_dir = File::Spec->catdir(dirname(__FILE__), '..', '..', 'overnet-spec', 'fixtures', 'irc');
+my $fixtures_dir = File::Spec->catdir(dirname(__FILE__), '..', '..', 'spec', 'fixtures', 'irc');
 
 opendir my $dh, $fixtures_dir or die "Can't open $fixtures_dir: $!";
 my @fixture_files = sort grep { /\.json$/ } readdir $dh;

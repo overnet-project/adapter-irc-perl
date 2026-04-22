@@ -4,9 +4,9 @@ This directory contains the IRC adapter implementation for Overnet.
 
 The authoritative specification lives in:
 
-- `../overnet-spec/docs/core.md`
-- `../overnet-spec/docs/adapters/irc.md`
-- `../overnet-spec/fixtures/irc/`
+- `../spec/docs/core.md`
+- `../spec/docs/adapters/irc.md`
+- `../spec/fixtures/irc/`
 
 The Overnet core spec remains authoritative for all core semantics. The IRC adapter spec is authoritative for IRC-specific mapping, identity, provenance, and capability behavior.
 
@@ -25,8 +25,8 @@ When rules conflict, follow this order:
 
 Work in this order:
 
-1. update or clarify the IRC adapter spec in `../overnet-spec/docs/adapters/irc.md`
-2. add or update IRC fixtures in `../overnet-spec/fixtures/irc/`
+1. update or clarify the IRC adapter spec in `../spec/docs/adapters/irc.md`
+2. add or update IRC fixtures in `../spec/fixtures/irc/`
 3. add or update adapter tests here
 4. run tests to confirm failures
 5. implement until tests pass
@@ -73,7 +73,7 @@ This dist should contain IRC-specific implementation logic only.
 
 Do not copy Overnet core validation rules into this dist unless the adapter specifically needs to enforce them at its own boundary.
 
-Shared core semantics should stay in `overnet-core-perl/`.
+Shared core semantics should stay in `core-perl/`.
 
 ## Dependencies
 
