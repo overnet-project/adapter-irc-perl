@@ -1,6 +1,8 @@
 .gitignore
 CLAUDE.md
 cpanfile
+contrib/znc/overnetauth.pm
+docs/znc-overnetauth.md
 lib/Overnet/Adapter/IRC.pm
 LICENSE
 Makefile.PL
@@ -12,5 +14,6 @@ t/10-privmsg-fixtures.t
 t/20-derived-presence-fixtures.t
 t/30-nip29-authoritative.t
 t/40-spec-conformance.t
+t/50-znc-overnetauth.t
 t/makemaker-metadata.t
 t/manifest-skip-policy.t
