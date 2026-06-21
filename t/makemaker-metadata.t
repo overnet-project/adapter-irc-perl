@@ -55,6 +55,7 @@ is_deeply(
       qw(
         t/00-load.t
         t/30-nip29-authoritative.t
+        t/50-znc-overnetauth.t
         t/makemaker-metadata.t
         t/manifest-skip-policy.t
       )

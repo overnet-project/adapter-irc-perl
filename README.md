@@ -45,6 +45,19 @@ Run tests with:
 prove -v t/
 ```
 
+## ZNC Integration
+
+This repository also carries a ZNC network module for Overnet IRC
+authentication:
+
+- source: `contrib/znc/overnetauth.pm`
+- documentation: `docs/znc-overnetauth.md`
+
+The module keeps key handling outside ZNC by delegating `OVERNETAUTH` and SASL
+`NOSTR` responses to an external helper such as `overnet-irc-auth.pl bridge`.
+Existing IRC clients can then connect through ZNC without needing their own
+Overnet auth plugin.
+
 ## Related Repositories
 
 - [spec](https://github.com/overnet-project/spec)
