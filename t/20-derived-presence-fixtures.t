@@ -15,13 +15,13 @@ my $adapter = Overnet::Adapter::IRC->new;
 my $fixtures_dir = File::Spec->catdir(_spec_root(), 'fixtures', 'irc-derived');
 
 opendir my $dh, $fixtures_dir or die "Can't open $fixtures_dir: $!";
-my @fixture_files = sort grep { /\.json$/ } readdir $dh;
+my @fixture_files = sort grep { /\.json$/mx } readdir $dh;
 closedir $dh;
 
 for my $file (@fixture_files) {
   my $path = File::Spec->catfile($fixtures_dir, $file);
   open my $fh, '<', $path or die "Can't read $path: $!";
-  my $json = do { local $/; <$fh> };
+  my $json = do { local $/ = undef; <$fh> };
   close $fh;
 
   my $fixture = JSON::decode_json($json);
@@ -121,7 +121,7 @@ subtest 'open_session accepts declared secret slots without exposing plaintext b
       } or $error = $@;
       $error;
     },
-    qr/Unsupported IRC secret slot: unsupported_slot/,
+    qr/Unsupported\ IRC\ secret\ slot:\ unsupported_slot/mx,
     'open_session rejects unsupported secret slots',
   );
 };

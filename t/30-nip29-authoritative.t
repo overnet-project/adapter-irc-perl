@@ -51,7 +51,7 @@ subtest 'authoritative KICK maps to a NIP-29 remove-user event draft' => sub {
     ],
     'authoritative KICK targets the bound NIP-29 group member',
   );
-  like $result->{event}{id}, qr/\A[0-9a-f]{64}\z/, 'authoritative KICK has a deterministic unsigned event id';
+  like $result->{event}{id}, qr/\A[0-9a-f]{64}\z/mx, 'authoritative KICK has a deterministic unsigned event id';
   is $result->{event}{sig}, undef, 'authoritative KICK remains unsigned';
 };
 

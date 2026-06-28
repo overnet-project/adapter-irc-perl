@@ -55,6 +55,7 @@ sub _assert_profile_event_valid {
   ok $result->{applicable}, 'profile contract applies to adapter event';
   ok $result->{valid}, 'adapter event satisfies profile contract'
     or diag explain $result->{errors};
+  return;
 }
 
 sub _contract_set {
@@ -67,7 +68,7 @@ sub _contract_set {
   ));
 
   return map {
-    _load_json(File::Spec->catfile($spec_root, split m{/}, $_))->{input}{contract}
+    _load_json(File::Spec->catfile($spec_root, split m{/}mx, $_))->{input}{contract}
   } @{$fixture->{input}{contract_fixtures}};
 }
 
@@ -75,21 +76,21 @@ sub _fixture_paths {
   my ($spec_root, $family) = @_;
   my $dir = File::Spec->catdir($spec_root, 'fixtures', $family);
   opendir my $dh, $dir or die "Can't open $dir: $!";
-  my @files = sort grep { /\.json\z/ } readdir $dh;
+  my @files = sort grep { /\.json\z/mx } readdir $dh;
   closedir $dh;
   return map { File::Spec->catfile($dir, $_) } @files;
 }
 
 sub _case_name {
   my ($path, $fixture) = @_;
-  my ($file) = $path =~ m{([^/]+)\z};
+  my ($file) = $path =~ m{([^/]+)\z}mx;
   return "$file - $fixture->{description}";
 }
 
 sub _load_json {
   my ($path) = @_;
   open my $fh, '<', $path or die "Can't read $path: $!";
-  my $json = do { local $/; <$fh> };
+  my $json = do { local $/ = undef; <$fh> };
   close $fh;
   return JSON::decode_json($json);
 }

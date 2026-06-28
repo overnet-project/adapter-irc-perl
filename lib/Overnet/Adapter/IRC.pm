@@ -134,7 +134,7 @@ sub map_input {
         && !grep { !defined($_) || ref($_) || !length($_) } @{$args{mode_args}};
   }
 
-  my $is_channel_target = defined $target && $target =~ /\A[#&]/ ? 1 : 0;
+  my $is_channel_target = defined $target && $target =~ /\A[#&]/mx ? 1 : 0;
   my ($kind, $event_type, $object_type, $object_id, $origin, $body);
 
   if (($session_config->{authority_profile} || '') eq 'nip29'
@@ -365,7 +365,7 @@ sub derive_channel_presence {
   return _error('IRC target is required')
     unless defined $target && length $target;
   return _error('Presence target must be a channel')
-    unless $target =~ /\A[#&]/;
+    unless $target =~ /\A[#&]/mx;
 
   my $created_at = $args{created_at};
   return _error('created_at is required')
@@ -408,7 +408,7 @@ sub derive_channel_presence {
 
     if ($command eq 'JOIN') {
       return _error('JOIN target must be a channel')
-        unless defined $event_target && $event_target =~ /\A[#&]/;
+        unless defined $event_target && $event_target =~ /\A[#&]/mx;
       next unless $event_target eq $target;
 
       $members{$nick} = {
@@ -420,7 +420,7 @@ sub derive_channel_presence {
         if !defined($as_of) || $event->{created_at} > $as_of;
     } elsif ($command eq 'PART') {
       return _error('PART target must be a channel')
-        unless defined $event_target && $event_target =~ /\A[#&]/;
+        unless defined $event_target && $event_target =~ /\A[#&]/mx;
       next unless $event_target eq $target;
 
       delete $members{$nick};
@@ -428,7 +428,7 @@ sub derive_channel_presence {
         if !defined($as_of) || $event->{created_at} > $as_of;
     } elsif ($command eq 'QUIT') {
       return _error('QUIT target must be a channel')
-        unless defined $event_target && $event_target =~ /\A[#&]/;
+        unless defined $event_target && $event_target =~ /\A[#&]/mx;
       next unless $event_target eq $target;
 
       delete $members{$nick};
@@ -436,7 +436,7 @@ sub derive_channel_presence {
         if !defined($as_of) || $event->{created_at} > $as_of;
     } elsif ($command eq 'KICK') {
       return _error('KICK target must be a channel')
-        unless defined $event_target && $event_target =~ /\A[#&]/;
+        unless defined $event_target && $event_target =~ /\A[#&]/mx;
       return _error('KICK target_nick is required')
         unless defined $event->{target_nick} && length $event->{target_nick};
       next unless $event_target eq $target;
@@ -660,7 +660,7 @@ sub derive_authoritative_join_admission {
   return _error('IRC target is required')
     unless defined $target && length $target;
   return _error('authoritative_join_admission target must be a channel')
-    unless $target =~ /\A[#&]/;
+    unless $target =~ /\A[#&]/mx;
 
   my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
     network        => $network,
@@ -675,7 +675,7 @@ sub derive_authoritative_join_admission {
 
   my $actor_pubkey = $args{actor_pubkey};
   return _error('actor_pubkey must be a 64-character hex pubkey when supplied')
-    if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/);
+    if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/mx);
   my $actor_mask = $args{actor_mask};
   return _error('actor_mask must be a non-empty string when supplied')
     if defined($actor_mask) && (ref($actor_mask) || !length($actor_mask));
@@ -741,10 +741,10 @@ sub derive_authoritative_join_admission {
     $admission{deleted} = JSON::true;
     $admission{reason} = 'deleted';
   } else {
-    $admission{allowed} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/
+    $admission{allowed} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/mx
       ? JSON::false
       : JSON::true;
-    $admission{reason} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/
+    $admission{reason} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/mx
       ? '+i'
       : '';
   }
@@ -765,7 +765,7 @@ sub derive_authoritative_speak_permission {
   my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
   my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
   my %roles = map { $_ => 1 } @roles;
-  my $moderated = ($view->{channel_modes} || '') =~ /\+[^ ]*m/ ? 1 : 0;
+  my $moderated = ($view->{channel_modes} || '') =~ /\+[^ ]*m/mx ? 1 : 0;
 
   my %permission = (
     operation         => 'authoritative_speak_permission',
@@ -805,7 +805,7 @@ sub derive_authoritative_topic_permission {
   my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
   my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
   my %roles = map { $_ => 1 } @roles;
-  my $topic_restricted = ($view->{channel_modes} || '') =~ /\+[^ ]*t/ ? 1 : 0;
+  my $topic_restricted = ($view->{channel_modes} || '') =~ /\+[^ ]*t/mx ? 1 : 0;
 
   my %permission = (
     operation         => 'authoritative_topic_permission',
@@ -868,9 +868,9 @@ sub derive_authoritative_mode_write_permission {
     $permission{reason} = 'deleted';
   } elsif (!$roles{'irc.operator'}) {
     $permission{reason} = 'not_operator';
-  } elsif ($mode =~ /\A[+-][ov]\z/) {
+  } elsif ($mode =~ /\A[+-][ov]\z/mx) {
     return _error('mode_args[0] target pubkey is required for channel role mode writes')
-      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[0-9a-f]{64}\z/;
+      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[0-9a-f]{64}\z/mx;
     my $target_pubkey = $mode_args->[0];
     my $target_member = _member_for_pubkey($view->{members}, $target_pubkey);
     $permission{allowed} = JSON::true;
@@ -878,41 +878,41 @@ sub derive_authoritative_mode_write_permission {
     $permission{current_roles} = ref($target_member) eq 'HASH'
       ? [ @{$target_member->{roles} || []} ]
       : [];
-  } elsif ($mode =~ /\A[+-][b]\z/) {
+  } elsif ($mode =~ /\A[+-][b]\z/mx) {
     return _error('mode_args[0] ban mask is required for channel ban mode writes')
       unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
     $permission{allowed} = JSON::true;
     $permission{normalized_ban_mask} = $mode_args->[0];
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][e]\z/) {
+  } elsif ($mode =~ /\A[+-][e]\z/mx) {
     return _error('mode_args[0] exception mask is required for channel exception mode writes')
       unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
     $permission{allowed} = JSON::true;
     $permission{normalized_exception_mask} = $mode_args->[0];
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][I]\z/) {
+  } elsif ($mode =~ /\A[+-][I]\z/mx) {
     return _error('mode_args[0] invite exception mask is required for channel invite exception mode writes')
       unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
     $permission{allowed} = JSON::true;
     $permission{normalized_invite_exception_mask} = $mode_args->[0];
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][k]\z/) {
-    if ($mode =~ /\A\+k\z/) {
+  } elsif ($mode =~ /\A[+-][k]\z/mx) {
+    if ($mode =~ /\A\+k\z/mx) {
       return _error('mode_args[0] channel key is required for +k')
         unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
       $permission{channel_key} = $mode_args->[0];
     }
     $permission{allowed} = JSON::true;
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][l]\z/) {
-    if ($mode =~ /\A\+l\z/) {
+  } elsif ($mode =~ /\A[+-][l]\z/mx) {
+    if ($mode =~ /\A\+l\z/mx) {
       return _error('mode_args[0] user limit is required for +l')
-        unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[1-9][0-9]*\z/;
+        unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[1-9][0-9]*\z/mx;
       $permission{user_limit} = 0 + $mode_args->[0];
     }
     $permission{allowed} = JSON::true;
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][imt]\z/) {
+  } elsif ($mode =~ /\A[+-][imt]\z/mx) {
     $permission{allowed} = JSON::true;
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
   } else {
@@ -976,7 +976,7 @@ sub derive_authoritative_channel_action_permission {
     $permission{allowed} = JSON::true;
     if ($action eq 'kick' || $action eq 'invite') {
       return _error('target_pubkey is required for authoritative channel action')
-        unless defined($args{target_pubkey}) && !ref($args{target_pubkey}) && $args{target_pubkey} =~ /\A[0-9a-f]{64}\z/;
+        unless defined($args{target_pubkey}) && !ref($args{target_pubkey}) && $args{target_pubkey} =~ /\A[0-9a-f]{64}\z/mx;
       $permission{target_pubkey} = $args{target_pubkey};
     }
     if ($action eq 'delete') {
@@ -1007,7 +1007,7 @@ sub derive_authoritative_channel_view {
   return _error('IRC target is required')
     unless defined $target && length $target;
   return _error('authoritative_channel_view target must be a channel')
-    unless $target =~ /\A[#&]/;
+    unless $target =~ /\A[#&]/mx;
 
   my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
     network        => $network,
@@ -1021,7 +1021,7 @@ sub derive_authoritative_channel_view {
     unless ref($authoritative_events) eq 'ARRAY' && @{$authoritative_events};
   my $actor_pubkey = $args{actor_pubkey};
   return _error('actor_pubkey must be a 64-character hex pubkey when supplied')
-    if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/);
+    if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/mx);
   my $actor_mask = $args{actor_mask};
   return _error('actor_mask must be a non-empty string when supplied')
     if defined($actor_mask) && (ref($actor_mask) || !length($actor_mask));
@@ -1333,7 +1333,7 @@ sub _authoritative_permission_view {
   return (undef, undef, undef, 'IRC target is required')
     unless defined $target && length $target;
   return (undef, undef, undef, 'authoritative permission target must be a channel')
-    unless $target =~ /\A[#&]/;
+    unless $target =~ /\A[#&]/mx;
 
   my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
     network        => $network,
@@ -1346,7 +1346,7 @@ sub _authoritative_permission_view {
   return (undef, undef, undef, 'authoritative_events must be an array')
     unless ref($authoritative_events) eq 'ARRAY';
   return (undef, undef, undef, 'actor_pubkey is required')
-    unless defined($args{actor_pubkey}) && !ref($args{actor_pubkey}) && $args{actor_pubkey} =~ /\A[0-9a-f]{64}\z/;
+    unless defined($args{actor_pubkey}) && !ref($args{actor_pubkey}) && $args{actor_pubkey} =~ /\A[0-9a-f]{64}\z/mx;
   return (undef, undef, undef, 'authoritative state unavailable')
     unless @{$authoritative_events};
 
@@ -1362,9 +1362,9 @@ sub _authoritative_permission_view {
 sub _group_metadata_from_authoritative_view {
   my ($view) = @_;
   return {
-    closed           => ($view->{channel_modes} || '') =~ /\+[^ ]*i/ ? 1 : 0,
-    moderated        => ($view->{channel_modes} || '') =~ /\+[^ ]*m/ ? 1 : 0,
-    topic_restricted => ($view->{channel_modes} || '') =~ /\+[^ ]*t/ ? 1 : 0,
+    closed           => ($view->{channel_modes} || '') =~ /\+[^ ]*i/mx ? 1 : 0,
+    moderated        => ($view->{channel_modes} || '') =~ /\+[^ ]*m/mx ? 1 : 0,
+    topic_restricted => ($view->{channel_modes} || '') =~ /\+[^ ]*t/mx ? 1 : 0,
     private          => $view->{private} ? 1 : 0,
     restricted       => $view->{restricted} ? 1 : 0,
     hidden           => $view->{hidden} ? 1 : 0,
@@ -1380,8 +1380,8 @@ sub _group_metadata_from_authoritative_view {
 
 sub _member_for_pubkey {
   my ($members, $pubkey) = @_;
-  return undef unless ref($members) eq 'ARRAY';
-  return undef unless defined $pubkey && !ref($pubkey) && length($pubkey);
+  return unless ref($members) eq 'ARRAY';
+  return unless defined $pubkey && !ref($pubkey) && length($pubkey);
 
   for my $member (@{$members}) {
     next unless ref($member) eq 'HASH';
@@ -1389,7 +1389,7 @@ sub _member_for_pubkey {
     return $member;
   }
 
-  return undef;
+  return;
 }
 
 sub _map_nip29_authoritative_input {
@@ -1414,24 +1414,24 @@ sub _map_nip29_authoritative_input {
 
   my $actor_pubkey = $args{actor_pubkey};
   return _error('authoritative NIP-29 mapping requires actor_pubkey')
-    unless defined $actor_pubkey && $actor_pubkey =~ /\A[0-9a-f]{64}\z/;
+    unless defined $actor_pubkey && $actor_pubkey =~ /\A[0-9a-f]{64}\z/mx;
   my $signing_pubkey = $args{signing_pubkey};
   my $authority_event_id = $args{authority_event_id};
   my $authority_sequence = $args{authority_sequence};
   if (defined $signing_pubkey || defined $authority_event_id || defined $authority_sequence) {
     return _error('authoritative NIP-29 delegated signing requires signing_pubkey')
-      unless defined $signing_pubkey && $signing_pubkey =~ /\A[0-9a-f]{64}\z/;
+      unless defined $signing_pubkey && $signing_pubkey =~ /\A[0-9a-f]{64}\z/mx;
     return _error('authoritative NIP-29 delegated signing requires authority_event_id')
-      unless defined $authority_event_id && $authority_event_id =~ /\A[0-9a-f]{64}\z/;
+      unless defined $authority_event_id && $authority_event_id =~ /\A[0-9a-f]{64}\z/mx;
     return _error('authoritative NIP-29 delegated signing requires authority_sequence')
-      unless defined $authority_sequence && !ref($authority_sequence) && $authority_sequence =~ /\A[1-9]\d*\z/;
+      unless defined $authority_sequence && !ref($authority_sequence) && $authority_sequence =~ /\A[1-9]\d*\z/mx;
   }
   my $event_pubkey = defined $signing_pubkey ? $signing_pubkey : $actor_pubkey;
 
   if ($command eq 'KICK') {
     my $target_pubkey = $args{target_pubkey};
     return _error('authoritative NIP-29 KICK requires target_pubkey')
-      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/;
+      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/mx;
 
     my $event = Net::Nostr::Group->remove_user(
       pubkey     => $event_pubkey,
@@ -1457,7 +1457,7 @@ sub _map_nip29_authoritative_input {
   if ($command eq 'INVITE') {
     my $target_pubkey = $args{target_pubkey};
     return _error('authoritative NIP-29 INVITE requires target_pubkey')
-      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/;
+      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/mx;
 
     my $invite_code = $args{invite_code};
     return _error('authoritative NIP-29 INVITE requires invite_code')
@@ -1649,11 +1649,11 @@ sub _map_nip29_authoritative_input {
   return _error('MODE mode is required')
     unless defined $mode && length $mode;
 
-  if ($mode =~ /\A([+-])([ov])\z/) {
+  if ($mode =~ /\A([+-])([ov])\z/mx) {
     my ($direction, $mode_letter) = ($1, $2);
     my $target_pubkey = $args{target_pubkey};
     return _error("authoritative NIP-29 MODE $mode requires target_pubkey")
-      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/;
+      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/mx;
 
     my $current_roles = $args{current_roles};
     return _error("authoritative NIP-29 MODE $mode requires current_roles")
@@ -1690,7 +1690,7 @@ sub _map_nip29_authoritative_input {
     };
   }
 
-  if ($mode =~ /\A([+-])([beIklimt])\z/) {
+  if ($mode =~ /\A([+-])([beIklimt])\z/mx) {
     my ($direction, $mode_letter) = ($1, $2);
     my $group_metadata = $args{group_metadata} || {};
     return _error('group_metadata must be an object')
@@ -1746,7 +1746,7 @@ sub _map_nip29_authoritative_input {
       if ($direction eq '+') {
         my $user_limit = $args{user_limit};
         return _error("authoritative NIP-29 MODE $mode requires user_limit")
-          unless defined $user_limit && !ref($user_limit) && $user_limit =~ /\A[1-9][0-9]*\z/;
+          unless defined $user_limit && !ref($user_limit) && $user_limit =~ /\A[1-9][0-9]*\z/mx;
         $metadata{user_limit} = 0 + $user_limit;
       } else {
         delete $metadata{user_limit};
@@ -1925,7 +1925,7 @@ sub _metadata_from_group_event {
       $metadata{channel_key} = $tag->[1];
       next;
     }
-    if ($tag->[0] eq 'limit' && @{$tag} >= 2 && defined($tag->[1]) && $tag->[1] =~ /\A[1-9][0-9]*\z/) {
+    if ($tag->[0] eq 'limit' && @{$tag} >= 2 && defined($tag->[1]) && $tag->[1] =~ /\A[1-9][0-9]*\z/mx) {
       $metadata{user_limit} = 0 + $tag->[1];
       next;
     }
@@ -2037,13 +2037,13 @@ sub _invite_code_from_group_join_request_event {
       if $tag->[0] eq 'code';
   }
 
-  return undef;
+  return;
 }
 
 sub _pending_invite_for_pubkey {
   my ($pending_invites, $pubkey) = @_;
-  return undef unless ref($pending_invites) eq 'HASH';
-  return undef unless defined $pubkey && !ref($pubkey) && length($pubkey);
+  return unless ref($pending_invites) eq 'HASH';
+  return unless defined $pubkey && !ref($pubkey) && length($pubkey);
 
   for my $code (sort keys %{$pending_invites}) {
     my $invite = $pending_invites->{$code};
@@ -2052,7 +2052,7 @@ sub _pending_invite_for_pubkey {
     return $invite;
   }
 
-  return undef;
+  return;
 }
 
 sub _effective_actor_pubkey_from_group_event {
@@ -2062,7 +2062,7 @@ sub _effective_actor_pubkey_from_group_event {
     next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
     next unless $tag->[0] eq 'overnet_actor';
     return $tag->[1]
-      if defined $tag->[1] && $tag->[1] =~ /\A[0-9a-f]{64}\z/;
+      if defined $tag->[1] && $tag->[1] =~ /\A[0-9a-f]{64}\z/mx;
   }
 
   return $event->pubkey;
@@ -2078,7 +2078,7 @@ sub _irc_mask_from_group_event {
       if defined($tag->[1]) && !ref($tag->[1]) && length($tag->[1]);
   }
 
-  return undef;
+  return;
 }
 
 sub _sorted_authoritative_group_events {
@@ -2139,7 +2139,7 @@ sub _authority_ordering_from_event {
       next;
     }
     if (($tag->[0] || '') eq 'overnet_sequence' && !$sequence) {
-      $sequence = (defined($tag->[1]) && !ref($tag->[1]) && $tag->[1] =~ /\A\d+\z/)
+      $sequence = (defined($tag->[1]) && !ref($tag->[1]) && $tag->[1] =~ /\A\d+\z/mx)
         ? 0 + $tag->[1]
         : 0;
     }
@@ -2165,13 +2165,14 @@ sub _sorted_roles {
   my @roles = @_;
   my %seen;
   @roles = grep { defined $_ && length $_ && !$seen{$_}++ } @roles;
-  return sort {
+  my @sorted_roles = sort {
     ($a eq 'irc.operator' ? 0 : $a eq 'irc.voice' ? 1 : 2)
       <=>
     ($b eq 'irc.operator' ? 0 : $b eq 'irc.voice' ? 1 : 2)
       ||
     $a cmp $b
   } @roles;
+  return @sorted_roles;
 }
 
 sub _presentational_prefix_for_roles {
