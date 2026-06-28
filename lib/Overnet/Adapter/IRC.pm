@@ -1,14 +1,13 @@
 package Overnet::Adapter::IRC;
 
-use strict;
-use warnings;
-use JSON::PP ();
+use strictures 2;
+use JSON ();
 use Overnet::Authority::HostedChannel ();
 use Net::Nostr::Event;
 use Net::Nostr::Group;
 
 our $VERSION = '0.001';
-my $JSON = JSON::PP->new;
+my $JSON = JSON->new;
 
 sub new {
   my ($class, %args) = @_;
@@ -51,7 +50,7 @@ sub open_session {
   };
 
   return {
-    accepted => JSON::PP::true,
+    accepted => JSON::true,
   };
 }
 
@@ -463,7 +462,7 @@ sub derive_channel_presence {
   return _error('derived presence requires at least one relevant observed event')
     unless defined $as_of;
 
-  my $partial = exists $args{partial} ? ($args{partial} ? JSON::PP::true : JSON::PP::false) : JSON::PP::true;
+  my $partial = exists $args{partial} ? ($args{partial} ? JSON::true : JSON::false) : JSON::true;
   my @limitations = ('unsigned', 'no_edit_history', 'irc.ephemeral_presence');
   push @limitations, 'irc.partial_membership'
     if $partial;
@@ -539,7 +538,7 @@ sub derive_authoritative_channel_state {
         (defined($view->{user_limit}) ? (user_limit => $view->{user_limit}) : ()),
         (exists $view->{topic} ? (topic => $view->{topic}) : ()),
         (exists $view->{topic_actor_pubkey} ? (topic_actor_pubkey => $view->{topic_actor_pubkey}) : ()),
-        ($view->{tombstoned} ? (tombstoned => JSON::PP::true) : ()),
+        ($view->{tombstoned} ? (tombstoned => JSON::true) : ()),
         supported_roles   => [ @{$view->{supported_roles} || []} ],
         members           => [
           map { +{
@@ -618,16 +617,16 @@ sub derive_authoritative_list_entry_view {
   my $restricted = $view->{restricted} ? 1 : 0;
 
   if ($view->{tombstoned}) {
-    $entry{visible_in_list} = JSON::PP::false;
+    $entry{visible_in_list} = JSON::false;
     $entry{reason} = 'deleted';
   } elsif ($hidden && !defined($actor_member)) {
-    $entry{visible_in_list} = JSON::PP::false;
+    $entry{visible_in_list} = JSON::false;
     $entry{reason} = 'hidden';
   } else {
-    $entry{visible_in_list} = JSON::PP::true;
-    ($private ? ($entry{private} = JSON::PP::true) : ());
-    ($hidden ? ($entry{hidden} = JSON::PP::true) : ());
-    ($restricted ? ($entry{restricted} = JSON::PP::true) : ());
+    $entry{visible_in_list} = JSON::true;
+    ($private ? ($entry{private} = JSON::true) : ());
+    ($hidden ? ($entry{hidden} = JSON::true) : ());
+    ($restricted ? ($entry{restricted} = JSON::true) : ());
     $entry{channel_modes} = $view->{channel_modes};
     if ($private && !defined($actor_member)) {
       $entry{visible_users} = 0;
@@ -695,18 +694,18 @@ sub derive_authoritative_join_admission {
       host     => $group_host,
       group_id => $group_id,
     ),
-    allowed        => JSON::PP::false,
-    member         => JSON::PP::false,
-    present        => JSON::PP::false,
-    create_channel => JSON::PP::false,
-    auth_required  => JSON::PP::false,
+    allowed        => JSON::false,
+    member         => JSON::false,
+    present        => JSON::false,
+    create_channel => JSON::false,
+    auth_required  => JSON::false,
     reason         => '',
   );
 
   if (!@{$authoritative_events}) {
-    $admission{allowed} = defined($actor_pubkey) ? JSON::PP::true : JSON::PP::false;
-    $admission{create_channel} = defined($actor_pubkey) ? JSON::PP::true : JSON::PP::false;
-    $admission{auth_required} = defined($actor_pubkey) ? JSON::PP::false : JSON::PP::true;
+    $admission{allowed} = defined($actor_pubkey) ? JSON::true : JSON::false;
+    $admission{create_channel} = defined($actor_pubkey) ? JSON::true : JSON::false;
+    $admission{auth_required} = defined($actor_pubkey) ? JSON::false : JSON::true;
     $admission{reason} = defined($actor_pubkey) ? '' : 'auth_required';
 
     return {
@@ -726,25 +725,25 @@ sub derive_authoritative_join_admission {
         && $_->{pubkey} eq $actor_pubkey
     } @{$view->{present_members} || []};
 
-    $admission{allowed} = $view->{admission}{allowed} ? JSON::PP::true : JSON::PP::false;
-    $admission{member} = $view->{admission}{member} ? JSON::PP::true : JSON::PP::false;
-    $admission{present} = $present ? JSON::PP::true : JSON::PP::false;
+    $admission{allowed} = $view->{admission}{allowed} ? JSON::true : JSON::false;
+    $admission{member} = $view->{admission}{member} ? JSON::true : JSON::false;
+    $admission{present} = $present ? JSON::true : JSON::false;
     $admission{reason} = defined($view->{admission}{reason}) ? $view->{admission}{reason} : '';
     $admission{invite_code} = $view->{admission}{invite_code}
       if defined $view->{admission}{invite_code};
-    $admission{deleted} = JSON::PP::true
+    $admission{deleted} = JSON::true
       if $view->{admission}{deleted};
-    $admission{request_join} = JSON::PP::true
+    $admission{request_join} = JSON::true
       if $view->{admission}{request_join};
-    $admission{pending_request} = JSON::PP::true
+    $admission{pending_request} = JSON::true
       if $view->{admission}{pending_request};
   } elsif ($view->{tombstoned}) {
-    $admission{deleted} = JSON::PP::true;
+    $admission{deleted} = JSON::true;
     $admission{reason} = 'deleted';
   } else {
     $admission{allowed} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/
-      ? JSON::PP::false
-      : JSON::PP::true;
+      ? JSON::false
+      : JSON::true;
     $admission{reason} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/
       ? '+i'
       : '';
@@ -776,7 +775,7 @@ sub derive_authoritative_speak_permission {
     group_host        => $group_host,
     group_id          => $group_id,
     group_ref         => $view->{group_ref},
-    allowed           => JSON::PP::false,
+    allowed           => JSON::false,
     roles             => [ @roles ],
     presentational_prefix => _presentational_prefix_for_roles(\@roles),
     reason            => '',
@@ -785,7 +784,7 @@ sub derive_authoritative_speak_permission {
   if ($view->{tombstoned}) {
     $permission{reason} = 'deleted';
   } elsif (!$moderated || $roles{'irc.operator'} || $roles{'irc.voice'}) {
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
   } else {
     $permission{reason} = '+m';
   }
@@ -816,14 +815,14 @@ sub derive_authoritative_topic_permission {
     group_host        => $group_host,
     group_id          => $group_id,
     group_ref         => $view->{group_ref},
-    allowed           => JSON::PP::false,
+    allowed           => JSON::false,
     reason            => '',
   );
 
   if ($view->{tombstoned}) {
     $permission{reason} = 'deleted';
   } elsif (!$topic_restricted || $roles{'irc.operator'}) {
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
   } else {
     $permission{reason} = '+t';
   }
@@ -860,7 +859,7 @@ sub derive_authoritative_mode_write_permission {
     group_host        => $group_host,
     group_id          => $group_id,
     group_ref         => $view->{group_ref},
-    allowed           => JSON::PP::false,
+    allowed           => JSON::false,
     mode              => $mode,
     reason            => '',
   );
@@ -874,7 +873,7 @@ sub derive_authoritative_mode_write_permission {
       unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[0-9a-f]{64}\z/;
     my $target_pubkey = $mode_args->[0];
     my $target_member = _member_for_pubkey($view->{members}, $target_pubkey);
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
     $permission{target_pubkey} = $target_pubkey;
     $permission{current_roles} = ref($target_member) eq 'HASH'
       ? [ @{$target_member->{roles} || []} ]
@@ -882,19 +881,19 @@ sub derive_authoritative_mode_write_permission {
   } elsif ($mode =~ /\A[+-][b]\z/) {
     return _error('mode_args[0] ban mask is required for channel ban mode writes')
       unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
     $permission{normalized_ban_mask} = $mode_args->[0];
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
   } elsif ($mode =~ /\A[+-][e]\z/) {
     return _error('mode_args[0] exception mask is required for channel exception mode writes')
       unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
     $permission{normalized_exception_mask} = $mode_args->[0];
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
   } elsif ($mode =~ /\A[+-][I]\z/) {
     return _error('mode_args[0] invite exception mask is required for channel invite exception mode writes')
       unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
     $permission{normalized_invite_exception_mask} = $mode_args->[0];
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
   } elsif ($mode =~ /\A[+-][k]\z/) {
@@ -903,7 +902,7 @@ sub derive_authoritative_mode_write_permission {
         unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
       $permission{channel_key} = $mode_args->[0];
     }
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
   } elsif ($mode =~ /\A[+-][l]\z/) {
     if ($mode =~ /\A\+l\z/) {
@@ -911,10 +910,10 @@ sub derive_authoritative_mode_write_permission {
         unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[1-9][0-9]*\z/;
       $permission{user_limit} = 0 + $mode_args->[0];
     }
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
   } elsif ($mode =~ /\A[+-][imt]\z/) {
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
     $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
   } else {
     return _error('unsupported authoritative channel mode write');
@@ -956,7 +955,7 @@ sub derive_authoritative_channel_action_permission {
     group_id          => $group_id,
     group_ref         => $view->{group_ref},
     action            => $action,
-    allowed           => JSON::PP::false,
+    allowed           => JSON::false,
     reason            => '',
   );
 
@@ -966,7 +965,7 @@ sub derive_authoritative_channel_action_permission {
     } elsif (!$retained_roles{'irc.operator'}) {
       $permission{reason} = 'not_operator';
     } else {
-      $permission{allowed} = JSON::PP::true;
+      $permission{allowed} = JSON::true;
       $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
     }
   } elsif ($view->{tombstoned}) {
@@ -974,7 +973,7 @@ sub derive_authoritative_channel_action_permission {
   } elsif (!$roles{'irc.operator'}) {
     $permission{reason} = 'not_operator';
   } else {
-    $permission{allowed} = JSON::PP::true;
+    $permission{allowed} = JSON::true;
     if ($action eq 'kick' || $action eq 'invite') {
       return _error('target_pubkey is required for authoritative channel action')
         unless defined($args{target_pubkey}) && !ref($args{target_pubkey}) && $args{target_pubkey} =~ /\A[0-9a-f]{64}\z/;
@@ -1263,16 +1262,16 @@ sub derive_authoritative_channel_view {
     (defined($metadata{user_limit}) ? (user_limit => $metadata{user_limit}) : ()),
     (defined($metadata{topic}) ? (topic => $metadata{topic}) : ()),
     (defined($metadata{topic_actor_pubkey}) ? (topic_actor_pubkey => $metadata{topic_actor_pubkey}) : ()),
-    ($metadata{private} ? (private => JSON::PP::true) : ()),
-    ($metadata{restricted} ? (restricted => JSON::PP::true) : ()),
-    ($metadata{hidden} ? (hidden => JSON::PP::true) : ()),
+    ($metadata{private} ? (private => JSON::true) : ()),
+    ($metadata{restricted} ? (restricted => JSON::true) : ()),
+    ($metadata{hidden} ? (hidden => JSON::true) : ()),
     supported_roles => [ @supported_roles ],
     members         => \@derived_members,
     present_members => \@derived_present_members,
     pending_invites => \@derived_pending_invites,
     pending_join_requests => \@derived_pending_join_requests,
     ($metadata{tombstoned} ? (retained_members => \@derived_retained_members) : ()),
-    ($metadata{tombstoned} ? (tombstoned => JSON::PP::true) : ()),
+    ($metadata{tombstoned} ? (tombstoned => JSON::true) : ()),
   );
 
   if (defined $actor_pubkey) {
@@ -1296,15 +1295,15 @@ sub derive_authoritative_channel_view {
       && scalar(@derived_present_members) >= $metadata{user_limit};
     $view{admission} = {
       allowed     => $metadata{tombstoned}
-        ? JSON::PP::false
-        : ($banned ? JSON::PP::false : ($bad_key ? JSON::PP::false : ($channel_full ? JSON::PP::false : ($member || $invite || $invite_excepted || !$metadata{closed} ? JSON::PP::true : JSON::PP::false)))),
+        ? JSON::false
+        : ($banned ? JSON::false : ($bad_key ? JSON::false : ($channel_full ? JSON::false : ($member || $invite || $invite_excepted || !$metadata{closed} ? JSON::true : JSON::false)))),
       member      => $metadata{tombstoned}
-        ? JSON::PP::false
-        : ($member ? JSON::PP::true : JSON::PP::false),
-      ($metadata{tombstoned} ? (deleted => JSON::PP::true) : ()),
+        ? JSON::false
+        : ($member ? JSON::true : JSON::false),
+      ($metadata{tombstoned} ? (deleted => JSON::true) : ()),
       (!$metadata{tombstoned} && !$banned && !$bad_key && !$channel_full && defined($invite) ? (invite_code => $invite->{code}) : ()),
-      (!$metadata{tombstoned} && !$banned && !$bad_key && !$channel_full && !$member && !$invite && !$invite_excepted && $metadata{closed} && $metadata{restricted} && !defined($pending_request) ? (request_join => JSON::PP::true) : ()),
-      (!$metadata{tombstoned} && defined($pending_request) ? (pending_request => JSON::PP::true) : ()),
+      (!$metadata{tombstoned} && !$banned && !$bad_key && !$channel_full && !$member && !$invite && !$invite_excepted && $metadata{closed} && $metadata{restricted} && !defined($pending_request) ? (request_join => JSON::true) : ()),
+      (!$metadata{tombstoned} && defined($pending_request) ? (pending_request => JSON::true) : ()),
       reason      => $metadata{tombstoned}
         ? 'deleted'
         : ($banned ? '+b' : ($bad_key ? '+k' : ($channel_full ? '+l' : ($member || $invite || $invite_excepted || !$metadata{closed} ? '' : ($metadata{restricted} ? (defined($pending_request) ? 'join_request_pending' : 'join_request') : '+i'))))),

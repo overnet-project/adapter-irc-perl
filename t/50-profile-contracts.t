@@ -1,7 +1,6 @@
-use strict;
-use warnings;
+use strictures 2;
 use Test::More;
-use JSON::PP;
+use JSON ();
 use Config;
 use FindBin;
 use File::Spec;
@@ -92,7 +91,7 @@ sub _load_json {
   open my $fh, '<', $path or die "Can't read $path: $!";
   my $json = do { local $/; <$fh> };
   close $fh;
-  return decode_json($json);
+  return JSON::decode_json($json);
 }
 
 sub _spec_root {

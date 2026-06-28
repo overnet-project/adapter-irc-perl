@@ -1,7 +1,6 @@
-use strict;
-use warnings;
+use strictures 2;
 use Test::More;
-use JSON::PP;
+use JSON ();
 use Config;
 use FindBin;
 use File::Spec;
@@ -25,7 +24,7 @@ for my $file (@fixture_files) {
   my $json = do { local $/; <$fh> };
   close $fh;
 
-  my $fixture = decode_json($json);
+  my $fixture = JSON::decode_json($json);
   my $desc = $fixture->{description};
   my $input = $fixture->{input};
   my $expected = $fixture->{expected};
@@ -44,7 +43,7 @@ for my $file (@fixture_files) {
       my $expected_content = delete $expected_event->{content};
 
       is_deeply $got_event, $expected_event, 'derived event envelope matches fixture';
-      is_deeply decode_json($got_content), decode_json($expected_content),
+      is_deeply JSON::decode_json($got_content), JSON::decode_json($expected_content),
         'derived event content matches fixture semantically';
     } else {
       is $result->{reason}, $expected->{reason}, 'reason matches fixture';
