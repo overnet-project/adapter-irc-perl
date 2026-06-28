@@ -4,7 +4,6 @@ use Test::More;
 use JSON::PP;
 use Config;
 use FindBin;
-use File::Basename;
 use File::Spec;
 
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5');
@@ -14,7 +13,7 @@ use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib
 use Overnet::Adapter::IRC;
 
 my $adapter = Overnet::Adapter::IRC->new;
-my $fixtures_dir = File::Spec->catdir(dirname(__FILE__), '..', '..', 'spec', 'fixtures', 'irc-derived');
+my $fixtures_dir = File::Spec->catdir(_spec_root(), 'fixtures', 'irc-derived');
 
 opendir my $dh, $fixtures_dir or die "Can't open $fixtures_dir: $!";
 my @fixture_files = sort grep { /\.json$/ } readdir $dh;
@@ -129,3 +128,15 @@ subtest 'open_session accepts declared secret slots without exposing plaintext b
 };
 
 done_testing;
+
+sub _spec_root {
+  for my $dir (
+    File::Spec->catdir($FindBin::Bin, '..', '..', '..', 'spec'),
+    File::Spec->catdir($FindBin::Bin, '..', '..', 'spec'),
+  ) {
+    my $abs = File::Spec->rel2abs($dir);
+    return $abs if -d $abs;
+  }
+
+  die "Can't locate spec root\n";
+}

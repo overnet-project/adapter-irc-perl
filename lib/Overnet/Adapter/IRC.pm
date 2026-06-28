@@ -250,14 +250,7 @@ sub map_input {
     };
   }
 
-  my @tags = (
-    [ 'overnet_v',  $self->{overnet_version} ],
-    [ 'overnet_et', $event_type ],
-    [ 'overnet_ot', $object_type ],
-    [ 'overnet_oid', $object_id ],
-  );
-
-  push @tags, [ 'd', $object_id ] if $kind == 37800;
+  my @tags = $self->_overnet_tags($event_type, $object_type, $object_id);
 
   my @limitations = ('unsigned', 'no_edit_history');
   push @limitations, 'synthetic_identity'
@@ -487,13 +480,7 @@ sub derive_channel_presence {
     event => {
       kind       => 37800,
       created_at => $created_at + 0,
-      tags       => [
-        [ 'overnet_v', $self->{overnet_version} ],
-        [ 'overnet_et', 'irc.channel_presence' ],
-        [ 'overnet_ot', 'chat.channel' ],
-        [ 'overnet_oid', $object_id ],
-        [ 'd', $object_id ],
-      ],
+      tags       => [ $self->_overnet_tags('irc.channel_presence', 'chat.channel', $object_id) ],
       content => $JSON->encode({
         provenance => {
           type           => 'adapted',
@@ -510,6 +497,20 @@ sub derive_channel_presence {
       }),
     },
   };
+}
+
+sub _overnet_tags {
+  my ($self, $event_type, $object_type, $object_id) = @_;
+  return (
+    [ 'overnet_v',  $self->{overnet_version} ],
+    [ 'overnet_et', $event_type ],
+    [ 'overnet_ot', $object_type ],
+    [ 'overnet_oid', $object_id ],
+    [ 'v',          $self->{overnet_version} ],
+    [ 't',          $event_type ],
+    [ 'o',          $object_type ],
+    [ 'd',          $object_id ],
+  );
 }
 
 sub derive_authoritative_channel_state {
