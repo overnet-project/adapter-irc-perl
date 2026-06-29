@@ -3,18 +3,18 @@ use strictures 2;
 use ExtUtils::MakeMaker;
 
 WriteMakefile(
-  NAME             => 'Overnet::Adapter::IRC',
-  DISTNAME         => 'Overnet-Adapter-IRC',
-  AUTHOR           => 'Nicholas B. Hubbard <nicholashubbard@posteo.net>',
-  ABSTRACT         => 'Perl reference implementation of the Overnet IRC adapter',
-  VERSION_FROM     => 'lib/Overnet/Adapter/IRC.pm',
-  LICENSE          => 'gpl_3',
-  MIN_PERL_VERSION => '5.024',
+  NAME               => 'Overnet::Adapter::IRC',
+  DISTNAME           => 'Overnet-Adapter-IRC',
+  AUTHOR             => 'Nicholas B. Hubbard <nicholashubbard@posteo.net>',
+  ABSTRACT           => 'Perl reference implementation of the Overnet IRC adapter',
+  VERSION_FROM       => 'lib/Overnet/Adapter/IRC.pm',
+  LICENSE            => 'gpl_3',
+  MIN_PERL_VERSION   => '5.040',
   CONFIGURE_REQUIRES => {
     'ExtUtils::MakeMaker' => 0,
-    'strictures'         => 2,
+    'strictures'          => 2,
   },
-  PREREQ_PM        => {
+  PREREQ_PM => {
     'JSON'       => 0,
     'Net::Nostr' => 0,
     'Overnet'    => 0.001,

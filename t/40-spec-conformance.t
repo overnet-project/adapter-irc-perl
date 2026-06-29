@@ -6,7 +6,8 @@ use Test::More;
 
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5');
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version});
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version}, $Config{archname});
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version},
+  $Config{archname});
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'lib');
 
 use Overnet::Test::SpecConformance qw(

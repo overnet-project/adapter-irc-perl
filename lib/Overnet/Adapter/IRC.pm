@@ -1,7 +1,9 @@
 package Overnet::Adapter::IRC;
 
 use strictures 2;
-use JSON ();
+use Carp                              qw(croak);
+use English                           qw(-no_match_vars);
+use JSON                              ();
 use Overnet::Authority::HostedChannel ();
 use Net::Nostr::Event;
 use Net::Nostr::Group;
@@ -17,49 +19,47 @@ sub new {
 }
 
 sub supported_secret_slots {
-  return [
-    'server_password',
-    'nickserv_password',
-    'sasl_password',
-  ];
+  return ['server_password', 'nickserv_password', 'sasl_password',];
 }
 
 sub open_session {
   my ($self, %args) = @_;
   my $adapter_session_id = $args{adapter_session_id};
-  my $session_config = $args{session_config} || {};
-  my $secret_values = $args{secret_values} || {};
-  my %supported = map { $_ => 1 } @{supported_secret_slots()};
+  my $session_config     = $args{session_config} || {};
+  my $secret_values      = $args{secret_values}  || {};
+  my %supported          = map { $_ => 1 } @{supported_secret_slots()};
 
-  die "adapter_session_id is required\n"
-    unless defined $adapter_session_id && length $adapter_session_id;
-  die "session_config must be an object\n"
-    if ref($session_config) ne 'HASH';
-  die "secret_values must be an object\n"
-    if ref($secret_values) ne 'HASH';
-
-  for my $slot (sort keys %{$secret_values}) {
-    die "Unsupported IRC secret slot: $slot\n"
-      unless $supported{$slot};
-    die "IRC secret slot $slot must be a string\n"
-      if !defined($secret_values->{$slot}) || ref($secret_values->{$slot});
+  if (!_non_empty_scalar($adapter_session_id)) {
+    croak "adapter_session_id is required\n";
+  }
+  if (ref($session_config) ne 'HASH') {
+    croak "session_config must be an object\n";
+  }
+  if (ref($secret_values) ne 'HASH') {
+    croak "secret_values must be an object\n";
   }
 
-  $self->{session_state}{$adapter_session_id} = {
-    secret_slots => { map { $_ => 1 } sort keys %{$secret_values} },
-  };
+  for my $slot (sort keys %{$secret_values}) {
+    if (!$supported{$slot}) {
+      croak "Unsupported IRC secret slot: $slot\n";
+    }
+    if (!defined($secret_values->{$slot}) || ref($secret_values->{$slot})) {
+      croak "IRC secret slot $slot must be a string\n";
+    }
+  }
 
-  return {
-    accepted => JSON::true,
-  };
+  $self->{session_state}{$adapter_session_id} = {secret_slots => {map { $_ => 1 } sort keys %{$secret_values}},};
+
+  return {accepted => JSON::true,};
 }
 
 sub close_session {
   my ($self, %args) = @_;
   my $adapter_session_id = $args{adapter_session_id};
 
-  die "adapter_session_id is required\n"
-    unless defined $adapter_session_id && length $adapter_session_id;
+  if (!_non_empty_scalar($adapter_session_id)) {
+    croak "adapter_session_id is required\n";
+  }
 
   delete $self->{session_state}{$adapter_session_id};
   return 1;
@@ -67,213 +67,402 @@ sub close_session {
 
 sub map_input {
   my ($self, %args) = @_;
-  my $session_config = ref($args{session_config}) eq 'HASH'
-    ? $args{session_config}
-    : {};
 
-  my $command = $args{command};
-  return _error('IRC command is required')
-    unless defined $command && length $command;
-
-  return _error("Unsupported IRC command: $command")
-    unless $command eq 'PRIVMSG'
-      || $command eq 'NOTICE'
-      || $command eq 'TOPIC'
-      || $command eq 'JOIN'
-      || $command eq 'INVITE'
-      || $command eq 'PART'
-      || $command eq 'QUIT'
-      || $command eq 'KICK'
-      || $command eq 'NICK'
-      || $command eq 'MODE'
-      || $command eq 'DELETE'
-      || $command eq 'UNDELETE';
-
-  my $network = $args{network};
-  return _error('IRC network is required')
-    unless defined $network && length $network;
-
-  my $target = $args{target};
-  if ($command ne 'NICK') {
-    return _error('IRC target is required')
-      unless defined $target && length $target;
+  my $validation_error = _validate_map_input_args(\%args);
+  if (defined $validation_error) {
+    return $validation_error;
   }
 
-  my $nick = $args{nick};
-  return _error('Sender nick is required')
-    unless defined $nick && length $nick;
+  my $session_config = _session_config_from_args($args{session_config});
+  if (_should_map_nip29_authoritative_input(\%args, $session_config)) {
+    return $self->_map_nip29_authoritative_input(%args, session_config => $session_config,);
+  }
 
-  my $text = $args{text};
-  my $created_at = $args{created_at};
-  return _error('created_at is required')
-    unless defined $created_at;
+  return _map_standard_input($self, \%args);
+}
 
+sub _validate_map_input_args {
+  my ($args) = @_;
+
+  my $command = $args->{command};
+  if (!_non_empty_scalar($command)) {
+    return _error('IRC command is required');
+  }
+  if (!_is_supported_map_command($command)) {
+    return _error("Unsupported IRC command: $command");
+  }
+
+  if (!_non_empty_scalar($args->{network})) {
+    return _error('IRC network is required');
+  }
+  if ($command ne 'NICK' && !_non_empty_scalar($args->{target})) {
+    return _error('IRC target is required');
+  }
+  if (!_non_empty_scalar($args->{nick})) {
+    return _error('Sender nick is required');
+  }
+  if (!defined $args->{created_at}) {
+    return _error('created_at is required');
+  }
+
+  my $identity_error = _validate_irc_identity_args($args);
+  if (defined $identity_error) {
+    return $identity_error;
+  }
+
+  if ($command eq 'MODE' && exists $args->{mode_args} && !_valid_non_empty_scalar_array($args->{mode_args})) {
+    return _error('MODE mode_args must be an array of non-empty strings');
+  }
+
+  return;
+}
+
+sub _non_empty_scalar {
+  my ($value) = @_;
+
+  if (!defined $value) {
+    return 0;
+  }
+  if (ref($value)) {
+    return 0;
+  }
+  if (!length $value) {
+    return 0;
+  }
+
+  return 1;
+}
+
+sub _valid_non_empty_scalar_array {
+  my ($values) = @_;
+
+  if (ref($values) ne 'ARRAY') {
+    return 0;
+  }
+
+  for my $value (@{$values}) {
+    if (!_non_empty_scalar($value)) {
+      return 0;
+    }
+  }
+
+  return 1;
+}
+
+sub _valid_hex_pubkey {
+  my ($value) = @_;
+
+  if (defined($value) && !ref($value) && $value =~ /\A[0-9a-f]{64}\z/msx) {
+    return 1;
+  }
+
+  return 0;
+}
+
+sub _positive_integer_string {
+  my ($value) = @_;
+
+  if (defined($value) && !ref($value) && $value =~ /\A[1-9][0-9]*\z/msx) {
+    return 1;
+  }
+
+  return 0;
+}
+
+sub _is_channel_target {
+  my ($target) = @_;
+
+  if (defined $target && $target =~ /\A[#&]/msx) {
+    return 1;
+  }
+
+  return 0;
+}
+
+sub _channel_has_mode {
+  my ($channel_modes, $mode_letter) = @_;
+  my $mode_pattern = qr/\+[^ ]*\Q$mode_letter\E/msx;
+
+  if (($channel_modes || q{}) =~ $mode_pattern) {
+    return 1;
+  }
+
+  return 0;
+}
+
+sub _is_supported_map_command {
+  my ($command) = @_;
+  my %supported = map { $_ => 1 } qw(PRIVMSG NOTICE TOPIC JOIN INVITE PART QUIT KICK NICK MODE DELETE UNDELETE);
+  return $supported{$command} ? 1 : 0;
+}
+
+sub _validate_irc_identity_args {
+  my ($args) = @_;
+
+  for my $field (qw(account user host)) {
+    next if !exists $args->{$field};
+    if (!_non_empty_scalar($args->{$field})) {
+      return _error("IRC $field must be a non-empty string");
+    }
+  }
+
+  return;
+}
+
+sub _irc_identity_from_args {
+  my ($args) = @_;
   my %irc_identity;
 
-  if (exists $args{account}) {
-    return _error('IRC account must be a non-empty string')
-      unless defined $args{account} && length $args{account};
-    $irc_identity{account} = $args{account};
-  }
-
-  if (exists $args{user}) {
-    return _error('IRC user must be a non-empty string')
-      unless defined $args{user} && length $args{user};
-    $irc_identity{user} = $args{user};
-  }
-
-  if (exists $args{host}) {
-    return _error('IRC host must be a non-empty string')
-      unless defined $args{host} && length $args{host};
-    $irc_identity{host} = $args{host};
-  }
-
-  if ($command eq 'MODE' && exists $args{mode_args}) {
-    return _error('MODE mode_args must be an array of non-empty strings')
-      unless ref($args{mode_args}) eq 'ARRAY'
-        && !grep { !defined($_) || ref($_) || !length($_) } @{$args{mode_args}};
-  }
-
-  my $is_channel_target = defined $target && $target =~ /\A[#&]/mx ? 1 : 0;
-  my ($kind, $event_type, $object_type, $object_id, $origin, $body);
-
-  if (($session_config->{authority_profile} || '') eq 'nip29'
-      && ($command eq 'KICK' || $command eq 'MODE' || $command eq 'TOPIC' || $command eq 'INVITE' || $command eq 'JOIN' || $command eq 'PART' || $command eq 'DELETE' || $command eq 'UNDELETE')
-      && $is_channel_target) {
-    return $self->_map_nip29_authoritative_input(
-      %args,
-      session_config => $session_config,
-    );
-  }
-
-  return _error("Unsupported IRC command: $command")
-    if $command eq 'INVITE' || $command eq 'DELETE' || $command eq 'UNDELETE';
-
-  if ($command eq 'NICK') {
-    return _error('NICK new_nick is required')
-      unless defined $args{new_nick} && length $args{new_nick};
-
-    $kind = 7800;
-    $event_type = 'irc.nick';
-    $object_type = 'irc.network';
-    $object_id = "irc:$network";
-    $origin = $network;
-    $body = {
-      old_nick => $nick,
-      new_nick => $args{new_nick},
-    };
-  } elsif ($command eq 'MODE') {
-    return _error('MODE target must be a channel')
-      unless $is_channel_target;
-
-    return _error('MODE mode is required')
-      unless defined $args{mode} && length $args{mode};
-
-    $kind = 7800;
-    $event_type = 'irc.mode';
-    $object_type = 'chat.channel';
-    $object_id = "irc:$network:$target";
-    $origin = "$network/$target";
-    $body = {
-      mode => $args{mode},
-    };
-    $body->{mode_args} = [ @{$args{mode_args}} ]
-      if exists $args{mode_args};
-  } elsif ($command eq 'TOPIC') {
-    return _error('TOPIC target must be a channel')
-      unless $is_channel_target;
-
-    return _error('TOPIC text is required')
-      unless defined $text;
-
-    $kind = 37800;
-    $event_type = 'chat.topic';
-    $object_type = 'chat.channel';
-    $object_id = "irc:$network:$target";
-    $origin = "$network/$target";
-    $body = {
-      topic => $text,
-    };
-  } elsif ($command eq 'JOIN' || $command eq 'PART' || $command eq 'QUIT' || $command eq 'KICK') {
-    my %event_type_for = (
-      JOIN => 'chat.join',
-      PART => 'chat.part',
-      QUIT => 'chat.quit',
-      KICK => 'chat.kick',
-    );
-    my %target_error_for = (
-      JOIN => 'JOIN target must be a channel',
-      PART => 'PART target must be a channel',
-      QUIT => 'QUIT target must be a channel',
-      KICK => 'KICK target must be a channel',
-    );
-
-    return _error($target_error_for{$command})
-      unless $is_channel_target;
-
-    if ($command eq 'KICK') {
-      return _error('KICK target_nick is required')
-        unless defined $args{target_nick} && length $args{target_nick};
+  for my $field (qw(account user host)) {
+    if (exists $args->{$field}) {
+      $irc_identity{$field} = $args->{$field};
     }
-
-    $kind = 7800;
-    $event_type = $event_type_for{$command};
-    $object_type = 'chat.channel';
-    $object_id = "irc:$network:$target";
-    $origin = "$network/$target";
-    $body = {};
-    $body->{target_nick} = $args{target_nick}
-      if $command eq 'KICK';
-    $body->{reason} = $text
-      if defined $text && length $text;
-  } else {
-    return _error('Message text is required')
-      unless defined $text && length $text;
-
-    $kind = 7800;
-
-    if ($is_channel_target) {
-      $event_type = $command eq 'PRIVMSG' ? 'chat.message' : 'chat.notice';
-      $object_type = 'chat.channel';
-      $object_id = "irc:$network:$target";
-      $origin = "$network/$target";
-    } else {
-      $event_type = $command eq 'PRIVMSG' ? 'chat.dm_message' : 'chat.dm_notice';
-      $object_type = 'chat.dm';
-      $object_id = "irc:$network:dm:$target";
-      $origin = "$network/$target";
-    }
-
-    $body = {
-      text => $text,
-    };
   }
 
-  my @tags = $self->_overnet_tags($event_type, $object_type, $object_id);
+  return \%irc_identity;
+}
 
-  my @limitations = ('unsigned', 'no_edit_history');
-  push @limitations, 'synthetic_identity'
-    unless exists $irc_identity{account};
+sub _session_config_from_args {
+  my ($session_config) = @_;
+  if (ref($session_config) eq 'HASH') {
+    return $session_config;
+  }
+  return {};
+}
 
-  $body->{irc_identity} = { %irc_identity }
-    if %irc_identity;
+sub _should_map_nip29_authoritative_input {
+  my ($args, $session_config) = @_;
+  my %authoritative_commands = map { $_ => 1 } qw(KICK MODE TOPIC INVITE JOIN PART DELETE UNDELETE);
+
+  if (($session_config->{authority_profile} || q{}) ne 'nip29') {
+    return 0;
+  }
+  if (!_is_channel_target($args->{target})) {
+    return 0;
+  }
+
+  return $authoritative_commands{$args->{command}} ? 1 : 0;
+}
+
+sub _map_standard_input {
+  my ($self, $args) = @_;
+  my %mapper_for = (
+    NICK    => \&_map_nick_input,
+    MODE    => \&_map_mode_input,
+    TOPIC   => \&_map_topic_input,
+    JOIN    => \&_map_membership_input,
+    PART    => \&_map_membership_input,
+    QUIT    => \&_map_membership_input,
+    KICK    => \&_map_membership_input,
+    PRIVMSG => \&_map_message_input,
+    NOTICE  => \&_map_message_input,
+  );
+
+  my $mapper = $mapper_for{$args->{command}};
+  if (!defined $mapper) {
+    return _error("Unsupported IRC command: $args->{command}");
+  }
+
+  return $mapper->($self, $args);
+}
+
+sub _map_nick_input {
+  my ($self, $args) = @_;
+
+  if (!_non_empty_scalar($args->{new_nick})) {
+    return _error('NICK new_nick is required');
+  }
+
+  return _map_input_event_result(
+    $self, $args,
+    {
+      kind        => 7_800,
+      event_type  => 'irc.nick',
+      object_type => 'irc.network',
+      object_id   => "irc:$args->{network}",
+      origin      => $args->{network},
+      body        => {
+        old_nick => $args->{nick},
+        new_nick => $args->{new_nick},
+      },
+    },
+  );
+}
+
+sub _map_mode_input {
+  my ($self, $args) = @_;
+
+  if (!_is_channel_target($args->{target})) {
+    return _error('MODE target must be a channel');
+  }
+  if (!_non_empty_scalar($args->{mode})) {
+    return _error('MODE mode is required');
+  }
+
+  my $body = {mode => $args->{mode},};
+  if (exists $args->{mode_args}) {
+    $body->{mode_args} = [@{$args->{mode_args}}];
+  }
+
+  return _map_input_event_result(
+    $self, $args,
+    {
+      kind        => 7_800,
+      event_type  => 'irc.mode',
+      object_type => 'chat.channel',
+      object_id   => "irc:$args->{network}:$args->{target}",
+      origin      => "$args->{network}/$args->{target}",
+      body        => $body,
+    },
+  );
+}
+
+sub _map_topic_input {
+  my ($self, $args) = @_;
+
+  if (!_is_channel_target($args->{target})) {
+    return _error('TOPIC target must be a channel');
+  }
+  if (!defined $args->{text}) {
+    return _error('TOPIC text is required');
+  }
+
+  return _map_input_event_result(
+    $self, $args,
+    {
+      kind        => 37_800,
+      event_type  => 'chat.topic',
+      object_type => 'chat.channel',
+      object_id   => "irc:$args->{network}:$args->{target}",
+      origin      => "$args->{network}/$args->{target}",
+      body        => {topic => $args->{text},},
+    },
+  );
+}
+
+sub _map_membership_input {
+  my ($self, $args) = @_;
+  my %event_type_for = (
+    JOIN => 'chat.join',
+    PART => 'chat.part',
+    QUIT => 'chat.quit',
+    KICK => 'chat.kick',
+  );
+  my %target_error_for = (
+    JOIN => 'JOIN target must be a channel',
+    PART => 'PART target must be a channel',
+    QUIT => 'QUIT target must be a channel',
+    KICK => 'KICK target must be a channel',
+  );
+  my $command = $args->{command};
+
+  if (!_is_channel_target($args->{target})) {
+    return _error($target_error_for{$command});
+  }
+  if ($command eq 'KICK' && !_non_empty_scalar($args->{target_nick})) {
+    return _error('KICK target_nick is required');
+  }
+
+  my $body = {};
+  if ($command eq 'KICK') {
+    $body->{target_nick} = $args->{target_nick};
+  }
+  if (defined $args->{text} && length $args->{text}) {
+    $body->{reason} = $args->{text};
+  }
+
+  return _map_input_event_result(
+    $self, $args,
+    {
+      kind        => 7_800,
+      event_type  => $event_type_for{$command},
+      object_type => 'chat.channel',
+      object_id   => "irc:$args->{network}:$args->{target}",
+      origin      => "$args->{network}/$args->{target}",
+      body        => $body,
+    },
+  );
+}
+
+sub _map_message_input {
+  my ($self, $args) = @_;
+
+  if (!_non_empty_scalar($args->{text})) {
+    return _error('Message text is required');
+  }
+  if (_is_channel_target($args->{target})) {
+    return _map_channel_message_input($self, $args);
+  }
+
+  return _map_direct_message_input($self, $args);
+}
+
+sub _map_channel_message_input {
+  my ($self, $args) = @_;
+  my $event_type = $args->{command} eq 'PRIVMSG' ? 'chat.message' : 'chat.notice';
+
+  return _map_input_event_result(
+    $self, $args,
+    {
+      kind        => 7_800,
+      event_type  => $event_type,
+      object_type => 'chat.channel',
+      object_id   => "irc:$args->{network}:$args->{target}",
+      origin      => "$args->{network}/$args->{target}",
+      body        => {text => $args->{text},},
+    },
+  );
+}
+
+sub _map_direct_message_input {
+  my ($self, $args) = @_;
+  my $event_type = $args->{command} eq 'PRIVMSG' ? 'chat.dm_message' : 'chat.dm_notice';
+
+  return _map_input_event_result(
+    $self, $args,
+    {
+      kind        => 7_800,
+      event_type  => $event_type,
+      object_type => 'chat.dm',
+      object_id   => "irc:$args->{network}:dm:$args->{target}",
+      origin      => "$args->{network}/$args->{target}",
+      body        => {text => $args->{text},},
+    },
+  );
+}
+
+sub _map_input_event_result {
+  my ($self, $args, $mapped) = @_;
+  my $body         = $mapped->{body};
+  my $irc_identity = _irc_identity_from_args($args);
+  my @tags         = $self->_overnet_tags($mapped->{event_type}, $mapped->{object_type}, $mapped->{object_id});
+  my @limitations  = qw(unsigned no_edit_history);
+
+  if (!exists $irc_identity->{account}) {
+    push @limitations, 'synthetic_identity';
+  }
+  if (keys %{$irc_identity}) {
+    $body->{irc_identity} = {%{$irc_identity}};
+  }
 
   return {
     valid => 1,
     event => {
-      kind       => $kind,
-      created_at => $created_at + 0,
+      kind       => $mapped->{kind},
+      created_at => $args->{created_at} + 0,
       tags       => \@tags,
-      content => $JSON->encode({
-        provenance => {
-          type              => 'adapted',
-          protocol          => 'irc',
-          origin            => $origin,
-          external_identity => $nick,
-          limitations       => \@limitations,
-        },
-        body => $body,
-      }),
+      content    => $JSON->encode(
+        {
+          provenance => {
+            type              => 'adapted',
+            protocol          => 'irc',
+            origin            => $mapped->{origin},
+            external_identity => $args->{nick},
+            limitations       => \@limitations,
+          },
+          body => $body,
+        }
+      ),
     },
   };
 }
@@ -286,214 +475,292 @@ sub map_message {
 sub derive {
   my ($self, %args) = @_;
   my $operation = $args{operation};
-  my $input = $args{input} || {};
+  my $input     = $args{input} || {};
 
-  return _error('derive operation is required')
-    unless defined $operation && length $operation;
-  return _error('derive input must be an object')
-    if ref($input) ne 'HASH';
-
-  if ($operation eq 'channel_presence') {
-    return $self->derive_channel_presence(%{$input});
+  if (!_non_empty_scalar($operation)) {
+    return _error('derive operation is required');
   }
-  if ($operation eq 'authoritative_channel_view') {
-    return $self->derive_authoritative_channel_view(
-      %{$input},
-      session_config => $args{session_config},
-    );
-  }
-  if ($operation eq 'authoritative_join_admission') {
-    return $self->derive_authoritative_join_admission(
-      %{$input},
-      session_config => $args{session_config},
-    );
-  }
-  if ($operation eq 'authoritative_speak_permission') {
-    return $self->derive_authoritative_speak_permission(
-      %{$input},
-      session_config => $args{session_config},
-    );
-  }
-  if ($operation eq 'authoritative_topic_permission') {
-    return $self->derive_authoritative_topic_permission(
-      %{$input},
-      session_config => $args{session_config},
-    );
-  }
-  if ($operation eq 'authoritative_mode_write_permission') {
-    return $self->derive_authoritative_mode_write_permission(
-      %{$input},
-      session_config => $args{session_config},
-    );
-  }
-  if ($operation eq 'authoritative_channel_action_permission') {
-    return $self->derive_authoritative_channel_action_permission(
-      %{$input},
-      session_config => $args{session_config},
-    );
-  }
-  if ($operation eq 'authoritative_ban_list_view') {
-    return $self->derive_authoritative_ban_list_view(
-      %{$input},
-      session_config => $args{session_config},
-    );
-  }
-  if ($operation eq 'authoritative_list_entry_view') {
-    return $self->derive_authoritative_list_entry_view(
-      %{$input},
-      session_config => $args{session_config},
-    );
-  }
-  if ($operation eq 'authoritative_channel_state') {
-    return $self->derive_authoritative_channel_state(
-      %{$input},
-      session_config => $args{session_config},
-    );
+  if (ref($input) ne 'HASH') {
+    return _error('derive input must be an object');
   }
 
-  return _error("Unsupported derive operation: $operation");
+  my %method_for = (
+    channel_presence                        => 'derive_channel_presence',
+    authoritative_channel_view              => 'derive_authoritative_channel_view',
+    authoritative_join_admission            => 'derive_authoritative_join_admission',
+    authoritative_speak_permission          => 'derive_authoritative_speak_permission',
+    authoritative_topic_permission          => 'derive_authoritative_topic_permission',
+    authoritative_mode_write_permission     => 'derive_authoritative_mode_write_permission',
+    authoritative_channel_action_permission => 'derive_authoritative_channel_action_permission',
+    authoritative_ban_list_view             => 'derive_authoritative_ban_list_view',
+    authoritative_list_entry_view           => 'derive_authoritative_list_entry_view',
+    authoritative_channel_state             => 'derive_authoritative_channel_state',
+  );
+  my $method = $method_for{$operation};
+  if (!defined $method) {
+    return _error("Unsupported derive operation: $operation");
+  }
+
+  return $self->$method(%{$input}, session_config => $args{session_config},);
 }
 
 sub derive_channel_presence {
   my ($self, %args) = @_;
 
+  my $arg_error = _validate_presence_args(\%args);
+  if (defined $arg_error) {
+    return $arg_error;
+  }
+
   my $network = $args{network};
-  return _error('IRC network is required')
-    unless defined $network && length $network;
+  my $target  = $args{target};
+  my ($members, $as_of, $derive_error) = _derive_presence_members($network, $target, $args{events});
+  if (defined $derive_error) {
+    return _error($derive_error);
+  }
+  if (!defined $as_of) {
+    return _error('derived presence requires at least one relevant observed event');
+  }
 
-  my $target = $args{target};
-  return _error('IRC target is required')
-    unless defined $target && length $target;
-  return _error('Presence target must be a channel')
-    unless $target =~ /\A[#&]/mx;
+  return _presence_event_result($self, \%args, $members, $as_of);
+}
 
-  my $created_at = $args{created_at};
-  return _error('created_at is required')
-    unless defined $created_at;
+sub _validate_presence_args {
+  my ($args) = @_;
 
-  my $events = $args{events};
-  return _error('events must be a non-empty array')
-    unless ref($events) eq 'ARRAY' && @{$events};
+  if (!_non_empty_scalar($args->{network})) {
+    return _error('IRC network is required');
+  }
+  if (!_non_empty_scalar($args->{target})) {
+    return _error('IRC target is required');
+  }
+  if (!_is_channel_target($args->{target})) {
+    return _error('Presence target must be a channel');
+  }
+  if (!defined $args->{created_at}) {
+    return _error('created_at is required');
+  }
+  if (ref($args->{events}) ne 'ARRAY' || !@{$args->{events}}) {
+    return _error('events must be a non-empty array');
+  }
 
+  return;
+}
+
+sub _derive_presence_members {
+  my ($network, $target, $events) = @_;
   my %members;
   my $as_of;
+  my %handler_for = (
+    JOIN => \&_apply_presence_join_event,
+    PART => \&_apply_presence_part_event,
+    QUIT => \&_apply_presence_part_event,
+    KICK => \&_apply_presence_kick_event,
+    NICK => \&_apply_presence_nick_event,
+  );
 
   for my $event (@{$events}) {
-    return _error('derived presence events must be objects')
-      unless ref($event) eq 'HASH';
-
-    my $command = $event->{command};
-    return _error('derived presence event command is required')
-      unless defined $command && length $command;
-
-    return _error('derived presence event network mismatch')
-      unless defined $event->{network} && $event->{network} eq $network;
-
-    return _error('derived presence event nick is required')
-      unless defined $event->{nick} && length $event->{nick};
-
-    return _error('derived presence event created_at is required')
-      unless defined $event->{created_at};
-
-    my $nick = $event->{nick};
-    my $event_target = $event->{target};
-    my %irc_identity;
-
-    for my $field (qw(account user host)) {
-      next unless exists $event->{$field};
-      return _error("derived presence event $field must be a non-empty string")
-        unless defined $event->{$field} && length $event->{$field};
-      $irc_identity{$field} = $event->{$field};
+    my ($context, $event_error) = _presence_event_context($network, $event);
+    if (defined $event_error) {
+      return (undef, undef, $event_error);
     }
 
-    if ($command eq 'JOIN') {
-      return _error('JOIN target must be a channel')
-        unless defined $event_target && $event_target =~ /\A[#&]/mx;
-      next unless $event_target eq $target;
+    my $handler = $handler_for{$context->{command}};
+    if (!defined $handler) {
+      next;
+    }
 
-      $members{$nick} = {
-        nick            => $nick,
-        %irc_identity,
-        last_event_type => 'chat.join',
-      };
-      $as_of = $event->{created_at}
-        if !defined($as_of) || $event->{created_at} > $as_of;
-    } elsif ($command eq 'PART') {
-      return _error('PART target must be a channel')
-        unless defined $event_target && $event_target =~ /\A[#&]/mx;
-      next unless $event_target eq $target;
-
-      delete $members{$nick};
-      $as_of = $event->{created_at}
-        if !defined($as_of) || $event->{created_at} > $as_of;
-    } elsif ($command eq 'QUIT') {
-      return _error('QUIT target must be a channel')
-        unless defined $event_target && $event_target =~ /\A[#&]/mx;
-      next unless $event_target eq $target;
-
-      delete $members{$nick};
-      $as_of = $event->{created_at}
-        if !defined($as_of) || $event->{created_at} > $as_of;
-    } elsif ($command eq 'KICK') {
-      return _error('KICK target must be a channel')
-        unless defined $event_target && $event_target =~ /\A[#&]/mx;
-      return _error('KICK target_nick is required')
-        unless defined $event->{target_nick} && length $event->{target_nick};
-      next unless $event_target eq $target;
-
-      delete $members{$event->{target_nick}};
-      $as_of = $event->{created_at}
-        if !defined($as_of) || $event->{created_at} > $as_of;
-    } elsif ($command eq 'NICK') {
-      return _error('NICK new_nick is required')
-        unless defined $event->{new_nick} && length $event->{new_nick};
-      next unless exists $members{$nick};
-
-      my $member = delete $members{$nick};
-      $member->{nick} = $event->{new_nick};
-      @{$member}{keys %irc_identity} = values %irc_identity if %irc_identity;
-      $member->{last_event_type} = 'irc.nick';
-      $members{$event->{new_nick}} = $member;
-      $as_of = $event->{created_at}
-        if !defined($as_of) || $event->{created_at} > $as_of;
+    my ($event_as_of, $handler_error) = $handler->(\%members, $context, $target);
+    if (defined $handler_error) {
+      return (undef, undef, $handler_error);
+    }
+    if (defined($event_as_of) && (!defined($as_of) || $event_as_of > $as_of)) {
+      $as_of = $event_as_of;
     }
   }
 
-  return _error('derived presence requires at least one relevant observed event')
-    unless defined $as_of;
+  return (\%members, $as_of, undef);
+}
 
-  my $partial = exists $args{partial} ? ($args{partial} ? JSON::true : JSON::false) : JSON::true;
-  my @limitations = ('unsigned', 'no_edit_history', 'irc.ephemeral_presence');
-  push @limitations, 'irc.partial_membership'
-    if $partial;
+sub _presence_event_context {
+  my ($network, $event) = @_;
 
-  my @members = map {
-    my %member = %{$members{$_}};
-    \%member;
-  } sort keys %members;
+  if (ref($event) ne 'HASH') {
+    return (undef, 'derived presence events must be objects');
+  }
+  if (!_non_empty_scalar($event->{command})) {
+    return (undef, 'derived presence event command is required');
+  }
+  if (!defined($event->{network}) || $event->{network} ne $network) {
+    return (undef, 'derived presence event network mismatch');
+  }
+  if (!_non_empty_scalar($event->{nick})) {
+    return (undef, 'derived presence event nick is required');
+  }
+  if (!defined $event->{created_at}) {
+    return (undef, 'derived presence event created_at is required');
+  }
+
+  my ($irc_identity, $identity_error) = _presence_identity_from_event($event);
+  if (defined $identity_error) {
+    return (undef, $identity_error);
+  }
+
+  return (
+    {
+      command      => $event->{command},
+      nick         => $event->{nick},
+      target       => $event->{target},
+      created_at   => $event->{created_at},
+      target_nick  => $event->{target_nick},
+      new_nick     => $event->{new_nick},
+      irc_identity => $irc_identity,
+    },
+    undef,
+  );
+}
+
+sub _presence_identity_from_event {
+  my ($event) = @_;
+  my %irc_identity;
+
+  for my $field (qw(account user host)) {
+    if (!exists $event->{$field}) {
+      next;
+    }
+    if (!_non_empty_scalar($event->{$field})) {
+      return (undef, "derived presence event $field must be a non-empty string");
+    }
+    $irc_identity{$field} = $event->{$field};
+  }
+
+  return (\%irc_identity, undef);
+}
+
+sub _apply_presence_join_event {
+  my ($members, $context, $target) = @_;
+
+  my $target_error = _presence_channel_target_error('JOIN', $context->{target});
+  if (defined $target_error) {
+    return (undef, $target_error);
+  }
+  if ($context->{target} ne $target) {
+    return;
+  }
+
+  $members->{$context->{nick}} = {
+    nick => $context->{nick},
+    %{$context->{irc_identity}},
+    last_event_type => 'chat.join',
+  };
+
+  return ($context->{created_at}, undef);
+}
+
+sub _apply_presence_part_event {
+  my ($members, $context, $target) = @_;
+
+  my $target_error = _presence_channel_target_error($context->{command}, $context->{target});
+  if (defined $target_error) {
+    return (undef, $target_error);
+  }
+  if ($context->{target} ne $target) {
+    return;
+  }
+
+  delete $members->{$context->{nick}};
+  return ($context->{created_at}, undef);
+}
+
+sub _apply_presence_kick_event {
+  my ($members, $context, $target) = @_;
+
+  my $target_error = _presence_channel_target_error('KICK', $context->{target});
+  if (defined $target_error) {
+    return (undef, $target_error);
+  }
+  if (!_non_empty_scalar($context->{target_nick})) {
+    return (undef, 'KICK target_nick is required');
+  }
+  if ($context->{target} ne $target) {
+    return;
+  }
+
+  delete $members->{$context->{target_nick}};
+  return ($context->{created_at}, undef);
+}
+
+sub _apply_presence_nick_event {
+  my ($members, $context) = @_;
+
+  if (!_non_empty_scalar($context->{new_nick})) {
+    return (undef, 'NICK new_nick is required');
+  }
+  if (!exists $members->{$context->{nick}}) {
+    return;
+  }
+
+  my $member = delete $members->{$context->{nick}};
+  $member->{nick} = $context->{new_nick};
+  if (keys %{$context->{irc_identity}}) {
+    @{$member}{keys %{$context->{irc_identity}}} = values %{$context->{irc_identity}};
+  }
+  $member->{last_event_type} = 'irc.nick';
+  $members->{$context->{new_nick}} = $member;
+
+  return ($context->{created_at}, undef);
+}
+
+sub _presence_channel_target_error {
+  my ($command, $target) = @_;
+
+  if (!_is_channel_target($target)) {
+    return "$command target must be a channel";
+  }
+
+  return;
+}
+
+sub _presence_event_result {
+  my ($self, $args, $members_by_nick, $as_of) = @_;
+  my $network     = $args->{network};
+  my $target      = $args->{target};
+  my $partial     = exists $args->{partial} ? ($args->{partial} ? JSON::true : JSON::false) : JSON::true;
+  my @limitations = qw(unsigned no_edit_history irc.ephemeral_presence);
+  if ($partial) {
+    push @limitations, 'irc.partial_membership';
+  }
+
+  my @members;
+  for my $nick (sort keys %{$members_by_nick}) {
+    my %member = %{$members_by_nick->{$nick}};
+    push @members, \%member;
+  }
 
   my $object_id = "irc:$network:$target";
 
   return {
     valid => 1,
     event => {
-      kind       => 37800,
-      created_at => $created_at + 0,
-      tags       => [ $self->_overnet_tags('irc.channel_presence', 'chat.channel', $object_id) ],
-      content => $JSON->encode({
-        provenance => {
-          type           => 'adapted',
-          protocol       => 'irc',
-          origin         => "$network/$target",
-          external_scope => 'channel_membership',
-          limitations    => \@limitations,
-        },
-        body => {
-          members => \@members,
-          partial => $partial,
-          as_of   => $as_of + 0,
-        },
-      }),
+      kind       => 37_800,
+      created_at => $args->{created_at} + 0,
+      tags       => [$self->_overnet_tags('irc.channel_presence', 'chat.channel', $object_id)],
+      content    => $JSON->encode(
+        {
+          provenance => {
+            type           => 'adapted',
+            protocol       => 'irc',
+            origin         => "$network/$target",
+            external_scope => 'channel_membership',
+            limitations    => \@limitations,
+          },
+          body => {
+            members => \@members,
+            partial => $partial,
+            as_of   => $as_of + 0,
+          },
+        }
+      ),
     },
   };
 }
@@ -501,14 +768,14 @@ sub derive_channel_presence {
 sub _overnet_tags {
   my ($self, $event_type, $object_type, $object_id) = @_;
   return (
-    [ 'overnet_v',  $self->{overnet_version} ],
-    [ 'overnet_et', $event_type ],
-    [ 'overnet_ot', $object_type ],
-    [ 'overnet_oid', $object_id ],
-    [ 'v',          $self->{overnet_version} ],
-    [ 't',          $event_type ],
-    [ 'o',          $object_type ],
-    [ 'd',          $object_id ],
+    ['overnet_v',   $self->{overnet_version}],
+    ['overnet_et',  $event_type],
+    ['overnet_ot',  $object_type],
+    ['overnet_oid', $object_id],
+    ['v',           $self->{overnet_version}],
+    ['t',           $event_type],
+    ['o',           $object_type],
+    ['d',           $object_id],
   );
 }
 
@@ -516,7 +783,9 @@ sub derive_authoritative_channel_state {
   my ($self, %args) = @_;
 
   my $view_result = $self->derive_authoritative_channel_view(%args);
-  return $view_result unless $view_result->{valid};
+  if (!$view_result->{valid}) {
+    return $view_result;
+  }
 
   my $view = $view_result->{view}[0];
   return {
@@ -531,31 +800,46 @@ sub derive_authoritative_channel_state {
         group_id          => $view->{group_id},
         group_ref         => $view->{group_ref},
         channel_modes     => $view->{channel_modes},
-        (ref($view->{ban_masks}) eq 'ARRAY' && @{$view->{ban_masks}} ? (ban_masks => [ @{$view->{ban_masks}} ]) : ()),
-        (ref($view->{exception_masks}) eq 'ARRAY' && @{$view->{exception_masks}} ? (exception_masks => [ @{$view->{exception_masks}} ]) : ()),
-        (ref($view->{invite_exception_masks}) eq 'ARRAY' && @{$view->{invite_exception_masks}} ? (invite_exception_masks => [ @{$view->{invite_exception_masks}} ]) : ()),
-        (defined($view->{channel_key}) ? (channel_key => $view->{channel_key}) : ()),
-        (defined($view->{user_limit}) ? (user_limit => $view->{user_limit}) : ()),
-        (exists $view->{topic} ? (topic => $view->{topic}) : ()),
+        (ref($view->{ban_masks}) eq 'ARRAY' && @{$view->{ban_masks}} ? (ban_masks => [@{$view->{ban_masks}}]) : ()),
+        (
+          ref($view->{exception_masks}) eq 'ARRAY'
+            && @{$view->{exception_masks}} ? (exception_masks => [@{$view->{exception_masks}}]) : ()
+        ),
+        (
+          ref($view->{invite_exception_masks}) eq 'ARRAY' && @{$view->{invite_exception_masks}}
+          ? (invite_exception_masks => [@{$view->{invite_exception_masks}}])
+          : ()
+        ),
+        (defined($view->{channel_key})      ? (channel_key        => $view->{channel_key})        : ()),
+        (defined($view->{user_limit})       ? (user_limit         => $view->{user_limit})         : ()),
+        (exists $view->{topic}              ? (topic              => $view->{topic})              : ()),
         (exists $view->{topic_actor_pubkey} ? (topic_actor_pubkey => $view->{topic_actor_pubkey}) : ()),
-        ($view->{tombstoned} ? (tombstoned => JSON::true) : ()),
-        supported_roles   => [ @{$view->{supported_roles} || []} ],
-        members           => [
-          map { +{
-            pubkey                => $_->{pubkey},
-            roles                 => [ @{$_->{roles} || []} ],
-            presentational_prefix => $_->{presentational_prefix},
-          } } @{$view->{members} || []}
-        ],
-        (ref($view->{retained_members}) eq 'ARRAY' ? (
-          retained_members => [
-            map { +{
+        ($view->{tombstoned}                ? (tombstoned         => JSON::true)                  : ()),
+        supported_roles => [@{$view->{supported_roles} || []}],
+        members         => [
+          map {
+            +{
               pubkey                => $_->{pubkey},
-              roles                 => [ @{$_->{roles} || []} ],
+              roles                 => [@{$_->{roles} || []}],
               presentational_prefix => $_->{presentational_prefix},
-            } } @{$view->{retained_members}}
-          ],
-        ) : ()),
+            }
+          } @{$view->{members} || []}
+        ],
+        (
+          ref($view->{retained_members}) eq 'ARRAY'
+          ? (
+            retained_members => [
+              map {
+                +{
+                  pubkey                => $_->{pubkey},
+                  roles                 => [@{$_->{roles} || []}],
+                  presentational_prefix => $_->{presentational_prefix},
+                }
+              } @{$view->{retained_members}}
+            ],
+            )
+          : ()
+        ),
       },
     ],
   };
@@ -565,7 +849,9 @@ sub derive_authoritative_ban_list_view {
   my ($self, %args) = @_;
 
   my $view_result = $self->derive_authoritative_channel_view(%args);
-  return $view_result unless $view_result->{valid};
+  if (!$view_result->{valid}) {
+    return $view_result;
+  }
 
   my $view = $view_result->{view}[0];
   return {
@@ -579,7 +865,7 @@ sub derive_authoritative_ban_list_view {
         group_host        => $view->{group_host},
         group_id          => $view->{group_id},
         group_ref         => $view->{group_ref},
-        ban_masks         => [ @{_normalized_ban_masks($view->{ban_masks})} ],
+        ban_masks         => [@{_normalized_ban_masks($view->{ban_masks})}],
       },
     ],
   };
@@ -589,9 +875,11 @@ sub derive_authoritative_list_entry_view {
   my ($self, %args) = @_;
 
   my $view_result = $self->derive_authoritative_channel_view(%args);
-  return $view_result unless $view_result->{valid};
+  if (!$view_result->{valid}) {
+    return $view_result;
+  }
 
-  my $view = $view_result->{view}[0];
+  my $view    = $view_result->{view}[0];
   my $channel = $args{target};
 
   my %entry = (
@@ -606,152 +894,257 @@ sub derive_authoritative_list_entry_view {
   );
 
   my $actor_pubkey = $args{actor_pubkey};
-  my $actor_member = defined($actor_pubkey)
-    ? (
-      _member_for_pubkey($view->{members}, $actor_pubkey)
-        || _member_for_pubkey($view->{retained_members}, $actor_pubkey)
-    )
+  my $actor_member =
+    defined($actor_pubkey)
+    ? (_member_for_pubkey($view->{members}, $actor_pubkey)
+      || _member_for_pubkey($view->{retained_members}, $actor_pubkey))
     : undef;
-  my $private = $view->{private} ? 1 : 0;
-  my $hidden = $view->{hidden} ? 1 : 0;
+  my $private    = $view->{private}    ? 1 : 0;
+  my $hidden     = $view->{hidden}     ? 1 : 0;
   my $restricted = $view->{restricted} ? 1 : 0;
 
   if ($view->{tombstoned}) {
     $entry{visible_in_list} = JSON::false;
-    $entry{reason} = 'deleted';
+    $entry{reason}          = 'deleted';
   } elsif ($hidden && !defined($actor_member)) {
     $entry{visible_in_list} = JSON::false;
-    $entry{reason} = 'hidden';
+    $entry{reason}          = 'hidden';
   } else {
     $entry{visible_in_list} = JSON::true;
-    ($private ? ($entry{private} = JSON::true) : ());
-    ($hidden ? ($entry{hidden} = JSON::true) : ());
-    ($restricted ? ($entry{restricted} = JSON::true) : ());
+    if ($private) {
+      $entry{private} = JSON::true;
+    }
+    if ($hidden) {
+      $entry{hidden} = JSON::true;
+    }
+    if ($restricted) {
+      $entry{restricted} = JSON::true;
+    }
     $entry{channel_modes} = $view->{channel_modes};
     if ($private && !defined($actor_member)) {
       $entry{visible_users} = 0;
-      $entry{topic} = '';
+      $entry{topic}         = q{};
     } else {
       $entry{visible_users} = scalar @{$view->{present_members} || []};
-      $entry{topic} = defined($view->{topic}) ? $view->{topic} : '';
+      $entry{topic}         = defined($view->{topic}) ? $view->{topic} : q{};
     }
   }
 
   return {
     valid => 1,
-    view  => [ \%entry ],
+    view  => [\%entry],
   };
 }
 
 sub derive_authoritative_join_admission {
   my ($self, %args) = @_;
 
-  my $session_config = ref($args{session_config}) eq 'HASH'
-    ? $args{session_config}
-    : {};
-  return _error('authoritative_join_admission requires session_config.authority_profile = nip29')
-    unless ($session_config->{authority_profile} || '') eq 'nip29';
-
-  my $network = $args{network};
-  return _error('IRC network is required')
-    unless defined $network && length $network;
-
-  my $target = $args{target};
-  return _error('IRC target is required')
-    unless defined $target && length $target;
-  return _error('authoritative_join_admission target must be a channel')
-    unless $target =~ /\A[#&]/mx;
-
-  my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
-    network        => $network,
-    session_config => $session_config,
-    target         => $target,
+  my ($context, $context_error) = _authoritative_channel_context(
+    \%args,
+    {
+      operation       => 'authoritative_join_admission',
+      events_required => 'array',
+    },
   );
-  return _error($error) if defined $error;
+  if (defined $context_error) {
+    return _error($context_error);
+  }
 
-  my $authoritative_events = $args{authoritative_events};
-  return _error('authoritative_events must be an array')
-    unless ref($authoritative_events) eq 'ARRAY';
-
-  my $actor_pubkey = $args{actor_pubkey};
-  return _error('actor_pubkey must be a 64-character hex pubkey when supplied')
-    if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/mx);
-  my $actor_mask = $args{actor_mask};
-  return _error('actor_mask must be a non-empty string when supplied')
-    if defined($actor_mask) && (ref($actor_mask) || !length($actor_mask));
-  my $join_key = $args{join_key};
-  return _error('join_key must be a non-empty string when supplied')
-    if defined($join_key) && (ref($join_key) || !length($join_key));
-
-  my %admission = (
-    operation         => 'authoritative_join_admission',
-    authority_profile => 'nip29',
-    object_type       => 'chat.channel',
-    object_id         => "irc:$network:$target",
-    group_host        => $group_host,
-    group_id          => $group_id,
-    group_ref         => Net::Nostr::Group->format_id(
-      host     => $group_host,
-      group_id => $group_id,
-    ),
-    allowed        => JSON::false,
-    member         => JSON::false,
-    present        => JSON::false,
-    create_channel => JSON::false,
-    auth_required  => JSON::false,
-    reason         => '',
-  );
-
-  if (!@{$authoritative_events}) {
-    $admission{allowed} = defined($actor_pubkey) ? JSON::true : JSON::false;
-    $admission{create_channel} = defined($actor_pubkey) ? JSON::true : JSON::false;
-    $admission{auth_required} = defined($actor_pubkey) ? JSON::false : JSON::true;
-    $admission{reason} = defined($actor_pubkey) ? '' : 'auth_required';
-
-    return {
-      valid     => 1,
-      admission => [ \%admission ],
-    };
+  my %admission = _new_join_admission($context);
+  if (!@{$context->{authoritative_events}}) {
+    _apply_empty_authoritative_admission(\%admission, $args{actor_pubkey});
+    return _admission_result(\%admission);
   }
 
   my $view_result = $self->derive_authoritative_channel_view(%args);
-  return $view_result unless $view_result->{valid};
-
-  my $view = $view_result->{view}[0];
-  if (defined($actor_pubkey) && ref($view->{admission}) eq 'HASH') {
-    my $present = scalar grep {
-      ref($_) eq 'HASH'
-        && defined($_->{pubkey})
-        && $_->{pubkey} eq $actor_pubkey
-    } @{$view->{present_members} || []};
-
-    $admission{allowed} = $view->{admission}{allowed} ? JSON::true : JSON::false;
-    $admission{member} = $view->{admission}{member} ? JSON::true : JSON::false;
-    $admission{present} = $present ? JSON::true : JSON::false;
-    $admission{reason} = defined($view->{admission}{reason}) ? $view->{admission}{reason} : '';
-    $admission{invite_code} = $view->{admission}{invite_code}
-      if defined $view->{admission}{invite_code};
-    $admission{deleted} = JSON::true
-      if $view->{admission}{deleted};
-    $admission{request_join} = JSON::true
-      if $view->{admission}{request_join};
-    $admission{pending_request} = JSON::true
-      if $view->{admission}{pending_request};
-  } elsif ($view->{tombstoned}) {
-    $admission{deleted} = JSON::true;
-    $admission{reason} = 'deleted';
-  } else {
-    $admission{allowed} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/mx
-      ? JSON::false
-      : JSON::true;
-    $admission{reason} = ($view->{channel_modes} || '') =~ /\+[^ ]*i/mx
-      ? '+i'
-      : '';
+  if (!$view_result->{valid}) {
+    return $view_result;
   }
+  my $view = $view_result->{view}[0];
+  _apply_view_authoritative_admission(\%admission, $view, \%args);
+
+  return _admission_result(\%admission);
+}
+
+sub _authoritative_channel_context {
+  my ($args, $options) = @_;
+  my $operation      = $options->{operation};
+  my $session_config = _session_config_from_args($args->{session_config});
+
+  if (($session_config->{authority_profile} || q{}) ne 'nip29') {
+    return (undef, "$operation requires session_config.authority_profile = nip29");
+  }
+  if (!_non_empty_scalar($args->{network})) {
+    return (undef, 'IRC network is required');
+  }
+  if (!_non_empty_scalar($args->{target})) {
+    return (undef, 'IRC target is required');
+  }
+  if (!_is_channel_target($args->{target})) {
+    return (undef, "$operation target must be a channel");
+  }
+
+  my ($group_host, $group_id, $binding_error) = _resolve_nip29_group_binding(
+    network        => $args->{network},
+    session_config => $session_config,
+    target         => $args->{target},
+  );
+  if (defined $binding_error) {
+    return (undef, $binding_error);
+  }
+
+  my $events = $args->{authoritative_events};
+  if (ref($events) ne 'ARRAY') {
+    return (undef, _authoritative_events_error($options->{events_required}));
+  }
+  if ($options->{events_required} eq 'non_empty_array' && !@{$events}) {
+    return (undef, _authoritative_events_error($options->{events_required}));
+  }
+
+  my $actor_error = _optional_authoritative_actor_error($args);
+  if (defined $actor_error) {
+    return (undef, $actor_error);
+  }
+
+  return (
+    {
+      session_config       => $session_config,
+      network              => $args->{network},
+      target               => $args->{target},
+      group_host           => $group_host,
+      group_id             => $group_id,
+      group_ref            => Net::Nostr::Group->format_id(host => $group_host, group_id => $group_id,),
+      authoritative_events => $events,
+    },
+    undef,
+  );
+}
+
+sub _authoritative_events_error {
+  my ($events_required) = @_;
+
+  if ($events_required eq 'non_empty_array') {
+    return 'authoritative_events must be a non-empty array';
+  }
+
+  return 'authoritative_events must be an array';
+}
+
+sub _optional_authoritative_actor_error {
+  my ($args) = @_;
+
+  if (defined($args->{actor_pubkey}) && !_valid_hex_pubkey($args->{actor_pubkey})) {
+    return 'actor_pubkey must be a 64-character hex pubkey when supplied';
+  }
+  if (defined($args->{actor_mask}) && !_non_empty_scalar($args->{actor_mask})) {
+    return 'actor_mask must be a non-empty string when supplied';
+  }
+  if (defined($args->{join_key}) && !_non_empty_scalar($args->{join_key})) {
+    return 'join_key must be a non-empty string when supplied';
+  }
+
+  return;
+}
+
+sub _new_join_admission {
+  my ($context) = @_;
+
+  return (
+    operation         => 'authoritative_join_admission',
+    authority_profile => 'nip29',
+    object_type       => 'chat.channel',
+    object_id         => "irc:$context->{network}:$context->{target}",
+    group_host        => $context->{group_host},
+    group_id          => $context->{group_id},
+    group_ref         => $context->{group_ref},
+    allowed           => JSON::false,
+    member            => JSON::false,
+    present           => JSON::false,
+    create_channel    => JSON::false,
+    auth_required     => JSON::false,
+    reason            => q{},
+  );
+}
+
+sub _apply_empty_authoritative_admission {
+  my ($admission, $actor_pubkey) = @_;
+  my $has_actor = defined($actor_pubkey) ? 1 : 0;
+
+  $admission->{allowed}        = $has_actor ? JSON::true  : JSON::false;
+  $admission->{create_channel} = $has_actor ? JSON::true  : JSON::false;
+  $admission->{auth_required}  = $has_actor ? JSON::false : JSON::true;
+  $admission->{reason}         = $has_actor ? q{}         : 'auth_required';
+  return;
+}
+
+sub _apply_view_authoritative_admission {
+  my ($admission, $view, $args) = @_;
+
+  if (defined($args->{actor_pubkey}) && ref($view->{admission}) eq 'HASH') {
+    _copy_view_admission($admission, $view, $args->{actor_pubkey});
+    return;
+  }
+
+  if ($view->{tombstoned}) {
+    $admission->{deleted} = JSON::true;
+    $admission->{reason}  = 'deleted';
+    return;
+  }
+
+  if (_channel_has_mode($view->{channel_modes}, 'i')) {
+    $admission->{allowed} = JSON::false;
+    $admission->{reason}  = '+i';
+    return;
+  }
+
+  $admission->{allowed} = JSON::true;
+  $admission->{reason}  = q{};
+  return;
+}
+
+sub _copy_view_admission {
+  my ($admission, $view, $actor_pubkey) = @_;
+  my $view_admission = $view->{admission};
+
+  $admission->{allowed} = $view_admission->{allowed}                   ? JSON::true                : JSON::false;
+  $admission->{member}  = $view_admission->{member}                    ? JSON::true                : JSON::false;
+  $admission->{present} = _actor_present_in_view($view, $actor_pubkey) ? JSON::true                : JSON::false;
+  $admission->{reason}  = defined($view_admission->{reason})           ? $view_admission->{reason} : q{};
+  if (defined $view_admission->{invite_code}) {
+    $admission->{invite_code} = $view_admission->{invite_code};
+  }
+  if ($view_admission->{deleted}) {
+    $admission->{deleted} = JSON::true;
+  }
+  if ($view_admission->{request_join}) {
+    $admission->{request_join} = JSON::true;
+  }
+  if ($view_admission->{pending_request}) {
+    $admission->{pending_request} = JSON::true;
+  }
+
+  return;
+}
+
+sub _actor_present_in_view {
+  my ($view, $actor_pubkey) = @_;
+
+  for my $member (@{$view->{present_members} || []}) {
+    next if ref($member) ne 'HASH';
+    if (defined($member->{pubkey}) && $member->{pubkey} eq $actor_pubkey) {
+      return 1;
+    }
+  }
+
+  return 0;
+}
+
+sub _admission_result {
+  my ($admission) = @_;
 
   return {
     valid     => 1,
-    admission => [ \%admission ],
+    admission => [$admission],
   };
 }
 
@@ -762,23 +1155,23 @@ sub derive_authoritative_speak_permission {
   return _error($error) if defined $error;
 
   my $actor_pubkey = $args{actor_pubkey};
-  my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
-  my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
-  my %roles = map { $_ => 1 } @roles;
-  my $moderated = ($view->{channel_modes} || '') =~ /\+[^ ]*m/mx ? 1 : 0;
+  my $member       = _member_for_pubkey($view->{members}, $actor_pubkey);
+  my @roles        = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
+  my %roles        = map { $_ => 1 } @roles;
+  my $moderated    = _channel_has_mode($view->{channel_modes}, 'm');
 
   my %permission = (
-    operation         => 'authoritative_speak_permission',
-    authority_profile => 'nip29',
-    object_type       => 'chat.channel',
-    object_id         => $view->{object_id},
-    group_host        => $group_host,
-    group_id          => $group_id,
-    group_ref         => $view->{group_ref},
-    allowed           => JSON::false,
-    roles             => [ @roles ],
+    operation             => 'authoritative_speak_permission',
+    authority_profile     => 'nip29',
+    object_type           => 'chat.channel',
+    object_id             => $view->{object_id},
+    group_host            => $group_host,
+    group_id              => $group_id,
+    group_ref             => $view->{group_ref},
+    allowed               => JSON::false,
+    roles                 => [@roles],
     presentational_prefix => _presentational_prefix_for_roles(\@roles),
-    reason            => '',
+    reason                => q{},
   );
 
   if ($view->{tombstoned}) {
@@ -791,7 +1184,7 @@ sub derive_authoritative_speak_permission {
 
   return {
     valid      => 1,
-    permission => [ \%permission ],
+    permission => [\%permission],
   };
 }
 
@@ -801,11 +1194,11 @@ sub derive_authoritative_topic_permission {
   my ($group_host, $group_id, $view, $error) = _authoritative_permission_view($self, %args);
   return _error($error) if defined $error;
 
-  my $actor_pubkey = $args{actor_pubkey};
-  my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
-  my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
-  my %roles = map { $_ => 1 } @roles;
-  my $topic_restricted = ($view->{channel_modes} || '') =~ /\+[^ ]*t/mx ? 1 : 0;
+  my $actor_pubkey     = $args{actor_pubkey};
+  my $member           = _member_for_pubkey($view->{members}, $actor_pubkey);
+  my @roles            = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
+  my %roles            = map { $_ => 1 } @roles;
+  my $topic_restricted = _channel_has_mode($view->{channel_modes}, 't');
 
   my %permission = (
     operation         => 'authoritative_topic_permission',
@@ -816,7 +1209,7 @@ sub derive_authoritative_topic_permission {
     group_id          => $group_id,
     group_ref         => $view->{group_ref},
     allowed           => JSON::false,
-    reason            => '',
+    reason            => q{},
   );
 
   if ($view->{tombstoned}) {
@@ -829,7 +1222,7 @@ sub derive_authoritative_topic_permission {
 
   return {
     valid      => 1,
-    permission => [ \%permission ],
+    permission => [\%permission],
   };
 }
 
@@ -840,16 +1233,18 @@ sub derive_authoritative_mode_write_permission {
   return _error($error) if defined $error;
 
   my $mode = $args{mode};
-  return _error('mode is required')
-    unless defined($mode) && !ref($mode) && length($mode);
+  if (!_non_empty_scalar($mode)) {
+    return _error('mode is required');
+  }
   my $mode_args = $args{mode_args};
-  return _error('mode_args must be an array')
-    unless ref($mode_args) eq 'ARRAY';
+  if (ref($mode_args) ne 'ARRAY') {
+    return _error('mode_args must be an array');
+  }
 
   my $actor_pubkey = $args{actor_pubkey};
-  my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
-  my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
-  my %roles = map { $_ => 1 } @roles;
+  my $member       = _member_for_pubkey($view->{members}, $actor_pubkey);
+  my @roles        = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
+  my %roles        = map { $_ => 1 } @roles;
 
   my %permission = (
     operation         => 'authoritative_mode_write_permission',
@@ -861,68 +1256,24 @@ sub derive_authoritative_mode_write_permission {
     group_ref         => $view->{group_ref},
     allowed           => JSON::false,
     mode              => $mode,
-    reason            => '',
+    reason            => q{},
   );
 
   if ($view->{tombstoned}) {
     $permission{reason} = 'deleted';
-  } elsif (!$roles{'irc.operator'}) {
+    return _permission_result(\%permission);
+  }
+  if (!$roles{'irc.operator'}) {
     $permission{reason} = 'not_operator';
-  } elsif ($mode =~ /\A[+-][ov]\z/mx) {
-    return _error('mode_args[0] target pubkey is required for channel role mode writes')
-      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[0-9a-f]{64}\z/mx;
-    my $target_pubkey = $mode_args->[0];
-    my $target_member = _member_for_pubkey($view->{members}, $target_pubkey);
-    $permission{allowed} = JSON::true;
-    $permission{target_pubkey} = $target_pubkey;
-    $permission{current_roles} = ref($target_member) eq 'HASH'
-      ? [ @{$target_member->{roles} || []} ]
-      : [];
-  } elsif ($mode =~ /\A[+-][b]\z/mx) {
-    return _error('mode_args[0] ban mask is required for channel ban mode writes')
-      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
-    $permission{allowed} = JSON::true;
-    $permission{normalized_ban_mask} = $mode_args->[0];
-    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][e]\z/mx) {
-    return _error('mode_args[0] exception mask is required for channel exception mode writes')
-      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
-    $permission{allowed} = JSON::true;
-    $permission{normalized_exception_mask} = $mode_args->[0];
-    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][I]\z/mx) {
-    return _error('mode_args[0] invite exception mask is required for channel invite exception mode writes')
-      unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
-    $permission{allowed} = JSON::true;
-    $permission{normalized_invite_exception_mask} = $mode_args->[0];
-    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][k]\z/mx) {
-    if ($mode =~ /\A\+k\z/mx) {
-      return _error('mode_args[0] channel key is required for +k')
-        unless defined($mode_args->[0]) && !ref($mode_args->[0]) && length($mode_args->[0]);
-      $permission{channel_key} = $mode_args->[0];
-    }
-    $permission{allowed} = JSON::true;
-    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][l]\z/mx) {
-    if ($mode =~ /\A\+l\z/mx) {
-      return _error('mode_args[0] user limit is required for +l')
-        unless defined($mode_args->[0]) && !ref($mode_args->[0]) && $mode_args->[0] =~ /\A[1-9][0-9]*\z/mx;
-      $permission{user_limit} = 0 + $mode_args->[0];
-    }
-    $permission{allowed} = JSON::true;
-    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } elsif ($mode =~ /\A[+-][imt]\z/mx) {
-    $permission{allowed} = JSON::true;
-    $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-  } else {
-    return _error('unsupported authoritative channel mode write');
+    return _permission_result(\%permission);
   }
 
-  return {
-    valid      => 1,
-    permission => [ \%permission ],
-  };
+  my $mode_error = _apply_mode_write_permission(\%permission, $view, $mode, $mode_args);
+  if (defined $mode_error) {
+    return _error($mode_error);
+  }
+
+  return _permission_result(\%permission);
 }
 
 sub derive_authoritative_channel_action_permission {
@@ -932,19 +1283,21 @@ sub derive_authoritative_channel_action_permission {
   return _error($error) if defined $error;
 
   my $action = $args{action};
-  return _error('action is required')
-    unless defined($action) && !ref($action) && length($action);
+  if (!_non_empty_scalar($action)) {
+    return _error('action is required');
+  }
   $action = lc $action;
-  return _error('unsupported authoritative channel action')
-    unless grep { $_ eq $action } qw(kick invite delete undelete);
+  if (!_supported_authoritative_channel_action($action)) {
+    return _error('unsupported authoritative channel action');
+  }
 
-  my $actor_pubkey = $args{actor_pubkey};
-  my $member = _member_for_pubkey($view->{members}, $actor_pubkey);
+  my $actor_pubkey    = $args{actor_pubkey};
+  my $member          = _member_for_pubkey($view->{members},          $actor_pubkey);
   my $retained_member = _member_for_pubkey($view->{retained_members}, $actor_pubkey);
-  my @roles = ref($member) eq 'HASH' ? @{$member->{roles} || []} : ();
-  my @retained_roles = ref($retained_member) eq 'HASH' ? @{$retained_member->{roles} || []} : ();
-  my %roles = map { $_ => 1 } @roles;
-  my %retained_roles = map { $_ => 1 } @retained_roles;
+  my @roles           = ref($member) eq 'HASH'          ? @{$member->{roles}          || []} : ();
+  my @retained_roles  = ref($retained_member) eq 'HASH' ? @{$retained_member->{roles} || []} : ();
+  my %roles           = map { $_ => 1 } @roles;
+  my %retained_roles  = map { $_ => 1 } @retained_roles;
 
   my %permission = (
     operation         => 'authoritative_channel_action_permission',
@@ -956,436 +1309,889 @@ sub derive_authoritative_channel_action_permission {
     group_ref         => $view->{group_ref},
     action            => $action,
     allowed           => JSON::false,
-    reason            => '',
+    reason            => q{},
   );
 
   if ($action eq 'undelete') {
-    if (!$view->{tombstoned}) {
-      $permission{reason} = 'not_deleted';
-    } elsif (!$retained_roles{'irc.operator'}) {
-      $permission{reason} = 'not_operator';
-    } else {
-      $permission{allowed} = JSON::true;
-      $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-    }
-  } elsif ($view->{tombstoned}) {
-    $permission{reason} = 'deleted';
-  } elsif (!$roles{'irc.operator'}) {
-    $permission{reason} = 'not_operator';
-  } else {
-    $permission{allowed} = JSON::true;
-    if ($action eq 'kick' || $action eq 'invite') {
-      return _error('target_pubkey is required for authoritative channel action')
-        unless defined($args{target_pubkey}) && !ref($args{target_pubkey}) && $args{target_pubkey} =~ /\A[0-9a-f]{64}\z/mx;
-      $permission{target_pubkey} = $args{target_pubkey};
-    }
-    if ($action eq 'delete') {
-      $permission{group_metadata} = _group_metadata_from_authoritative_view($view);
-    }
+    _apply_undelete_permission(\%permission, $view, \%retained_roles);
+    return _permission_result(\%permission);
   }
+  if ($view->{tombstoned}) {
+    $permission{reason} = 'deleted';
+    return _permission_result(\%permission);
+  }
+  if (!$roles{'irc.operator'}) {
+    $permission{reason} = 'not_operator';
+    return _permission_result(\%permission);
+  }
+
+  my $action_error = _apply_live_action_permission(\%permission, $view, \%args);
+  if (defined $action_error) {
+    return _error($action_error);
+  }
+
+  return _permission_result(\%permission);
+}
+
+sub _permission_result {
+  my ($permission) = @_;
 
   return {
     valid      => 1,
-    permission => [ \%permission ],
+    permission => [$permission],
   };
+}
+
+sub _apply_mode_write_permission {
+  my ($permission, $view, $mode, $mode_args) = @_;
+
+  my $role_error = _apply_role_mode_write_permission($permission, $view, $mode, $mode_args);
+  if (defined $role_error || $permission->{allowed}) {
+    return $role_error;
+  }
+
+  my $list_error = _apply_list_mode_write_permission($permission, $view, $mode, $mode_args);
+  if (defined $list_error || $permission->{allowed}) {
+    return $list_error;
+  }
+
+  my $state_error = _apply_state_mode_write_permission($permission, $view, $mode, $mode_args);
+  if (defined $state_error || $permission->{allowed}) {
+    return $state_error;
+  }
+
+  return 'unsupported authoritative channel mode write';
+}
+
+sub _apply_role_mode_write_permission {
+  my ($permission, $view, $mode, $mode_args) = @_;
+
+  if ($mode !~ /\A[+-][ov]\z/msx) {
+    return;
+  }
+  if (!_valid_hex_pubkey($mode_args->[0])) {
+    return 'mode_args[0] target pubkey is required for channel role mode writes';
+  }
+
+  my $target_pubkey = $mode_args->[0];
+  my $target_member = _member_for_pubkey($view->{members}, $target_pubkey);
+  $permission->{allowed}       = JSON::true;
+  $permission->{target_pubkey} = $target_pubkey;
+  $permission->{current_roles} = ref($target_member) eq 'HASH' ? [@{$target_member->{roles} || []}] : [];
+  return;
+}
+
+sub _apply_list_mode_write_permission {
+  my ($permission, $view, $mode, $mode_args) = @_;
+  my %field_for = (
+    b => ['normalized_ban_mask',       'mode_args[0] ban mask is required for channel ban mode writes'],
+    e => ['normalized_exception_mask', 'mode_args[0] exception mask is required for channel exception mode writes'],
+    I => [
+      'normalized_invite_exception_mask',
+      'mode_args[0] invite exception mask is required for channel invite exception mode writes'
+    ],
+  );
+
+  if ($mode !~ /\A[+-][beI]\z/msx) {
+    return;
+  }
+
+  my $mode_letter = substr $mode, 1, 1;
+  my ($permission_field, $error_message) = @{$field_for{$mode_letter}};
+  if (!_non_empty_scalar($mode_args->[0])) {
+    return $error_message;
+  }
+
+  $permission->{allowed}           = JSON::true;
+  $permission->{$permission_field} = $mode_args->[0];
+  $permission->{group_metadata}    = _group_metadata_from_authoritative_view($view);
+  return;
+}
+
+sub _apply_state_mode_write_permission {
+  my ($permission, $view, $mode, $mode_args) = @_;
+
+  if ($mode !~ /\A[+-][klimt]\z/msx) {
+    return;
+  }
+
+  my $argument_error = _apply_state_mode_argument($permission, $mode, $mode_args);
+  if (defined $argument_error) {
+    return $argument_error;
+  }
+
+  $permission->{allowed}        = JSON::true;
+  $permission->{group_metadata} = _group_metadata_from_authoritative_view($view);
+  return;
+}
+
+sub _apply_state_mode_argument {
+  my ($permission, $mode, $mode_args) = @_;
+
+  if ($mode eq q{+k}) {
+    if (!_non_empty_scalar($mode_args->[0])) {
+      return 'mode_args[0] channel key is required for +k';
+    }
+    $permission->{channel_key} = $mode_args->[0];
+    return;
+  }
+  if ($mode eq q{+l}) {
+    if (!_positive_integer_string($mode_args->[0])) {
+      return 'mode_args[0] user limit is required for +l';
+    }
+    $permission->{user_limit} = 0 + $mode_args->[0];
+    return;
+  }
+
+  return;
+}
+
+sub _supported_authoritative_channel_action {
+  my ($action) = @_;
+  my %supported = map { $_ => 1 } qw(kick invite delete undelete);
+  return $supported{$action} ? 1 : 0;
+}
+
+sub _apply_undelete_permission {
+  my ($permission, $view, $retained_roles) = @_;
+
+  if (!$view->{tombstoned}) {
+    $permission->{reason} = 'not_deleted';
+    return;
+  }
+  if (!$retained_roles->{'irc.operator'}) {
+    $permission->{reason} = 'not_operator';
+    return;
+  }
+
+  $permission->{allowed}        = JSON::true;
+  $permission->{group_metadata} = _group_metadata_from_authoritative_view($view);
+  return;
+}
+
+sub _apply_live_action_permission {
+  my ($permission, $view, $args) = @_;
+  my $action = $permission->{action};
+
+  $permission->{allowed} = JSON::true;
+  if ($action eq 'kick' || $action eq 'invite') {
+    if (!_valid_hex_pubkey($args->{target_pubkey})) {
+      return 'target_pubkey is required for authoritative channel action';
+    }
+    $permission->{target_pubkey} = $args->{target_pubkey};
+  }
+  if ($action eq 'delete') {
+    $permission->{group_metadata} = _group_metadata_from_authoritative_view($view);
+  }
+
+  return;
 }
 
 sub derive_authoritative_channel_view {
   my ($self, %args) = @_;
 
-  my $session_config = ref($args{session_config}) eq 'HASH'
-    ? $args{session_config}
-    : {};
-  return _error('authoritative_channel_view requires session_config.authority_profile = nip29')
-    unless ($session_config->{authority_profile} || '') eq 'nip29';
-
-  my $network = $args{network};
-  return _error('IRC network is required')
-    unless defined $network && length $network;
-
-  my $target = $args{target};
-  return _error('IRC target is required')
-    unless defined $target && length $target;
-  return _error('authoritative_channel_view target must be a channel')
-    unless $target =~ /\A[#&]/mx;
-
-  my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
-    network        => $network,
-    session_config => $session_config,
-    target         => $target,
-  );
-  return _error($error) if defined $error;
-
-  my $authoritative_events = $args{authoritative_events};
-  return _error('authoritative_events must be a non-empty array')
-    unless ref($authoritative_events) eq 'ARRAY' && @{$authoritative_events};
-  my $actor_pubkey = $args{actor_pubkey};
-  return _error('actor_pubkey must be a 64-character hex pubkey when supplied')
-    if defined($actor_pubkey) && (ref($actor_pubkey) || $actor_pubkey !~ /\A[0-9a-f]{64}\z/mx);
-  my $actor_mask = $args{actor_mask};
-  return _error('actor_mask must be a non-empty string when supplied')
-    if defined($actor_mask) && (ref($actor_mask) || !length($actor_mask));
-  my $join_key = $args{join_key};
-  return _error('join_key must be a non-empty string when supplied')
-    if defined($join_key) && (ref($join_key) || !length($join_key));
-
-  my %members;
-  my %present_members;
-  my %metadata = (
-    closed           => 0,
-    moderated        => 0,
-    topic_restricted => 0,
-    ban_masks        => [],
-    exception_masks  => [],
-    invite_exception_masks => [],
-    channel_key      => undef,
-    user_limit       => undef,
-    topic            => undef,
-    topic_actor_pubkey => undef,
-    tombstoned       => 0,
-  );
-  my %pending_invites;
-  my %pending_join_requests;
-  my @supported_roles;
-
-  my @sorted_events = eval { _sorted_authoritative_group_events(@{$authoritative_events}) };
-  if ($@) {
-    my $error = $@;
-    chomp $error;
-    return _error($error);
-  }
-
-  for my $event (@sorted_events) {
-    my $event_group_id = Net::Nostr::Group->group_id_from_event($event);
-    return _error('authoritative event group mismatch')
-      if defined $event_group_id && $event_group_id ne $group_id;
-
-    if ($event->kind == 39000 || $event->kind == 9002) {
-      %metadata = (
-        %metadata,
-        %{_metadata_from_group_event($event)},
-      );
-      if ($metadata{tombstoned}) {
-        %present_members = ();
-        %pending_invites = ();
-        %pending_join_requests = ();
-      }
-      next;
-    }
-
-    if ($event->kind == 39001) {
-      my $admins = Net::Nostr::Group->admins_from_event($event);
-      for my $admin (@{$admins->{admins} || []}) {
-        my @roles = _sorted_roles(@{$admin->{roles} || []});
-        $members{$admin->{pubkey}} = {
-          pubkey => $admin->{pubkey},
-          roles  => \@roles,
-        };
-      }
-      next;
-    }
-
-    if ($event->kind == 39002) {
-      my $member_info = Net::Nostr::Group->members_from_event($event);
-      for my $pubkey (@{$member_info->{members} || []}) {
-        $members{$pubkey} ||= {
-          pubkey => $pubkey,
-          roles  => [],
-        };
-      }
-      next;
-    }
-
-    if ($event->kind == 39003) {
-      my $role_info = Net::Nostr::Group->roles_from_event($event);
-      @supported_roles = map { $_->{name} } @{$role_info->{roles} || []};
-      next;
-    }
-
-    if ($event->kind == 9000) {
-      my ($target_pubkey, @roles) = _target_and_roles_from_group_member_event($event);
-      return _error('put-user event must include one p tag target')
-        unless defined $target_pubkey;
-
-      $members{$target_pubkey} = {
-        pubkey => $target_pubkey,
-        roles  => [ _sorted_roles(@roles) ],
-      };
-      delete $pending_join_requests{$target_pubkey};
-      next;
-    }
-
-    if ($event->kind == 9001) {
-      my ($target_pubkey) = _target_and_roles_from_group_member_event($event);
-      return _error('remove-user event must include one p tag target')
-        unless defined $target_pubkey;
-
-      delete $members{$target_pubkey};
-      delete $present_members{$target_pubkey};
-      delete $pending_join_requests{$target_pubkey};
-      next;
-    }
-
-    if ($event->kind == 9009) {
-      my ($invite_code, $target_pubkey) = _invite_code_and_target_from_group_invite_event($event);
-      return _error('create-invite event must include one code tag')
-        unless defined $invite_code;
-
-      $pending_invites{$invite_code} = {
-        code => $invite_code,
-        (defined $target_pubkey ? (target_pubkey => $target_pubkey) : ()),
-      };
-      delete $pending_join_requests{$target_pubkey}
-        if defined $target_pubkey;
-      next;
-    }
-
-    if ($event->kind == 9021) {
-      my $invite_code = _invite_code_from_group_join_request_event($event);
-      my $joiner_pubkey = _effective_actor_pubkey_from_group_event($event);
-      my $joiner_mask = _irc_mask_from_group_event($event);
-      next unless defined $joiner_pubkey && length $joiner_pubkey;
-
-      my $joined = 0;
-      if (exists $members{$joiner_pubkey}) {
-        $joined = 1;
-      } elsif (defined $invite_code && exists $pending_invites{$invite_code}) {
-        my $invite = $pending_invites{$invite_code};
-        next if defined $invite->{target_pubkey}
-          && $invite->{target_pubkey} ne $joiner_pubkey;
-
-        $members{$joiner_pubkey} ||= {
-          pubkey => $joiner_pubkey,
-          roles  => [],
-        };
-        delete $pending_invites{$invite_code};
-        $joined = 1;
-      } elsif (!$metadata{closed}) {
-        $members{$joiner_pubkey} ||= {
-          pubkey => $joiner_pubkey,
-          roles  => [],
-        };
-        $joined = 1;
-      } elsif ($metadata{restricted} && !defined($invite_code)) {
-        $pending_join_requests{$joiner_pubkey} = {
-          pubkey => $joiner_pubkey,
-          (defined($joiner_mask) ? (actor_mask => $joiner_mask) : ()),
-        };
-      }
-
-      if ($joined) {
-        delete $pending_join_requests{$joiner_pubkey};
-        $present_members{$joiner_pubkey} = 1;
-      }
-      next;
-    }
-
-    if ($event->kind == 9022) {
-      my $leaver_pubkey = _effective_actor_pubkey_from_group_event($event);
-      next unless defined $leaver_pubkey && length $leaver_pubkey;
-
-      delete $members{$leaver_pubkey};
-      delete $present_members{$leaver_pubkey};
-      delete $pending_join_requests{$leaver_pubkey};
-      next;
-    }
-  }
-
-  my $channel_modes = '+' . join(
-    '',
-    grep { $_ }
-      ($metadata{closed} ? 'i' : ''),
-      (defined($metadata{channel_key}) && length($metadata{channel_key}) ? 'k' : ''),
-      (defined($metadata{user_limit}) ? 'l' : ''),
-      ($metadata{moderated} ? 'm' : ''),
-      'n',
-      ($metadata{topic_restricted} ? 't' : ''),
-  );
-
-  my @derived_members = map {
-    my $member = $members{$_};
+  my ($context, $context_error) = _authoritative_channel_context(
+    \%args,
     {
-      pubkey                => $member->{pubkey},
-      roles                 => [ @{$member->{roles} || []} ],
-      presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
-    }
-  } sort keys %members;
-  my @derived_retained_members = map {
-    my $member = $members{$_};
-    {
-      pubkey                => $member->{pubkey},
-      roles                 => [ @{$member->{roles} || []} ],
-      presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
-    }
-  } sort keys %members;
-  my @derived_present_members = map {
-    my $member = $members{$_}
-      or next;
-    {
-      pubkey                => $member->{pubkey},
-      roles                 => [ @{$member->{roles} || []} ],
-      presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
-    }
-  } grep { $present_members{$_} } sort keys %members;
-  my @derived_pending_invites = map {
-    my %invite = %{$pending_invites{$_}};
-    \%invite;
-  } sort keys %pending_invites;
-  my @derived_pending_join_requests = map {
-    my %request = %{$pending_join_requests{$_}};
-    \%request;
-  } sort keys %pending_join_requests;
-
-  if ($metadata{tombstoned}) {
-    @derived_members = ();
-    @derived_present_members = ();
-    @derived_pending_invites = ();
-    @derived_pending_join_requests = ();
-  }
-
-  my %view = (
-    operation         => 'authoritative_channel_view',
-    authority_profile => 'nip29',
-    object_type       => 'chat.channel',
-    object_id         => "irc:$network:$target",
-    group_host        => $group_host,
-    group_id          => $group_id,
-    group_ref         => Net::Nostr::Group->format_id(
-      host     => $group_host,
-      group_id => $group_id,
-    ),
-    channel_modes   => $channel_modes,
-    (@{$metadata{ban_masks} || []} ? (ban_masks => [ @{$metadata{ban_masks}} ]) : ()),
-    (@{$metadata{exception_masks} || []} ? (exception_masks => [ @{$metadata{exception_masks}} ]) : ()),
-    (@{$metadata{invite_exception_masks} || []} ? (invite_exception_masks => [ @{$metadata{invite_exception_masks}} ]) : ()),
-    (defined($metadata{channel_key}) ? (channel_key => $metadata{channel_key}) : ()),
-    (defined($metadata{user_limit}) ? (user_limit => $metadata{user_limit}) : ()),
-    (defined($metadata{topic}) ? (topic => $metadata{topic}) : ()),
-    (defined($metadata{topic_actor_pubkey}) ? (topic_actor_pubkey => $metadata{topic_actor_pubkey}) : ()),
-    ($metadata{private} ? (private => JSON::true) : ()),
-    ($metadata{restricted} ? (restricted => JSON::true) : ()),
-    ($metadata{hidden} ? (hidden => JSON::true) : ()),
-    supported_roles => [ @supported_roles ],
-    members         => \@derived_members,
-    present_members => \@derived_present_members,
-    pending_invites => \@derived_pending_invites,
-    pending_join_requests => \@derived_pending_join_requests,
-    ($metadata{tombstoned} ? (retained_members => \@derived_retained_members) : ()),
-    ($metadata{tombstoned} ? (tombstoned => JSON::true) : ()),
+      operation       => 'authoritative_channel_view',
+      events_required => 'non_empty_array',
+    },
   );
-
-  if (defined $actor_pubkey) {
-    my $member = $members{$actor_pubkey};
-    my $invite = _pending_invite_for_pubkey(\%pending_invites, $actor_pubkey);
-    my $excepted = defined($actor_mask)
-      ? _actor_mask_matches_masks($metadata{exception_masks}, $actor_mask)
-      : 0;
-    my $invite_excepted = defined($actor_mask)
-      ? _actor_mask_matches_masks($metadata{invite_exception_masks}, $actor_mask)
-      : 0;
-    my $pending_request = $pending_join_requests{$actor_pubkey};
-    my $banned = !$member && defined($actor_mask)
-      ? (_actor_mask_matches_masks($metadata{ban_masks}, $actor_mask) && !$excepted)
-      : 0;
-    my $bad_key = !$member
-      && defined($metadata{channel_key})
-      && (!defined($join_key) || $join_key ne $metadata{channel_key});
-    my $channel_full = !$member
-      && defined($metadata{user_limit})
-      && scalar(@derived_present_members) >= $metadata{user_limit};
-    $view{admission} = {
-      allowed     => $metadata{tombstoned}
-        ? JSON::false
-        : ($banned ? JSON::false : ($bad_key ? JSON::false : ($channel_full ? JSON::false : ($member || $invite || $invite_excepted || !$metadata{closed} ? JSON::true : JSON::false)))),
-      member      => $metadata{tombstoned}
-        ? JSON::false
-        : ($member ? JSON::true : JSON::false),
-      ($metadata{tombstoned} ? (deleted => JSON::true) : ()),
-      (!$metadata{tombstoned} && !$banned && !$bad_key && !$channel_full && defined($invite) ? (invite_code => $invite->{code}) : ()),
-      (!$metadata{tombstoned} && !$banned && !$bad_key && !$channel_full && !$member && !$invite && !$invite_excepted && $metadata{closed} && $metadata{restricted} && !defined($pending_request) ? (request_join => JSON::true) : ()),
-      (!$metadata{tombstoned} && defined($pending_request) ? (pending_request => JSON::true) : ()),
-      reason      => $metadata{tombstoned}
-        ? 'deleted'
-        : ($banned ? '+b' : ($bad_key ? '+k' : ($channel_full ? '+l' : ($member || $invite || $invite_excepted || !$metadata{closed} ? '' : ($metadata{restricted} ? (defined($pending_request) ? 'join_request_pending' : 'join_request') : '+i'))))),
-    };
+  if (defined $context_error) {
+    return _error($context_error);
   }
+
+  my ($state, $state_error) = _authoritative_channel_state_from_events($context);
+  if (defined $state_error) {
+    return _error($state_error);
+  }
+
+  my %view = _authoritative_channel_view_from_state($context, $state, \%args);
 
   return {
     valid => 1,
-    view  => [ \%view ],
+    view  => [\%view],
   };
+}
+
+sub _authoritative_channel_state_from_events {
+  my ($context) = @_;
+  my $state = _new_authoritative_channel_state();
+  my @sorted_events;
+
+  my $sort_ok = eval {
+    @sorted_events = _sorted_authoritative_group_events(@{$context->{authoritative_events}});
+    1;
+  };
+  if (!$sort_ok) {
+    my $sort_error = $EVAL_ERROR;
+    chomp $sort_error;
+    return (undef, $sort_error);
+  }
+
+  for my $event (@sorted_events) {
+    my $event_error = _apply_authoritative_channel_event($state, $event, $context->{group_id});
+    if (defined $event_error) {
+      return (undef, $event_error);
+    }
+  }
+
+  return ($state, undef);
+}
+
+sub _new_authoritative_channel_state {
+  return {
+    members               => {},
+    present_members       => {},
+    metadata              => _new_authoritative_metadata(),
+    pending_invites       => {},
+    pending_join_requests => {},
+    supported_roles       => [],
+  };
+}
+
+sub _new_authoritative_metadata {
+  return {
+    closed                 => 0,
+    moderated              => 0,
+    topic_restricted       => 0,
+    private                => 0,
+    restricted             => 0,
+    hidden                 => 0,
+    ban_masks              => [],
+    exception_masks        => [],
+    invite_exception_masks => [],
+    channel_key            => undef,
+    user_limit             => undef,
+    topic                  => undef,
+    topic_actor_pubkey     => undef,
+    tombstoned             => 0,
+  };
+}
+
+sub _apply_authoritative_channel_event {
+  my ($state, $event, $group_id) = @_;
+  my $event_group_id = Net::Nostr::Group->group_id_from_event($event);
+  my %handler_for    = (
+    39_000 => \&_apply_authoritative_metadata_event,
+    39_001 => \&_apply_authoritative_admins_event,
+    39_002 => \&_apply_authoritative_members_event,
+    39_003 => \&_apply_authoritative_roles_event,
+    9_000  => \&_apply_authoritative_put_user_event,
+    9_001  => \&_apply_authoritative_remove_user_event,
+    9_002  => \&_apply_authoritative_metadata_event,
+    9_009  => \&_apply_authoritative_create_invite_event,
+    9_021  => \&_apply_authoritative_join_request_event,
+    9_022  => \&_apply_authoritative_leave_request_event,
+  );
+
+  if (defined($event_group_id) && $event_group_id ne $group_id) {
+    return 'authoritative event group mismatch';
+  }
+
+  my $handler = $handler_for{$event->kind};
+  if (!defined $handler) {
+    return;
+  }
+
+  return $handler->($state, $event);
+}
+
+sub _apply_authoritative_metadata_event {
+  my ($state, $event) = @_;
+  my $metadata = $state->{metadata};
+  %{$metadata} = (%{$metadata}, %{_metadata_from_group_event($event)},);
+
+  if ($metadata->{tombstoned}) {
+    %{$state->{present_members}}       = ();
+    %{$state->{pending_invites}}       = ();
+    %{$state->{pending_join_requests}} = ();
+  }
+
+  return;
+}
+
+sub _apply_authoritative_admins_event {
+  my ($state, $event) = @_;
+  my $admins = Net::Nostr::Group->admins_from_event($event);
+
+  for my $admin (@{$admins->{admins} || []}) {
+    my @roles = _sorted_roles(@{$admin->{roles} || []});
+    $state->{members}{$admin->{pubkey}} = {
+      pubkey => $admin->{pubkey},
+      roles  => \@roles,
+    };
+  }
+
+  return;
+}
+
+sub _apply_authoritative_members_event {
+  my ($state, $event) = @_;
+  my $member_info = Net::Nostr::Group->members_from_event($event);
+
+  for my $pubkey (@{$member_info->{members} || []}) {
+    if (!exists $state->{members}{$pubkey}) {
+      $state->{members}{$pubkey} = {
+        pubkey => $pubkey,
+        roles  => [],
+      };
+    }
+  }
+
+  return;
+}
+
+sub _apply_authoritative_roles_event {
+  my ($state, $event) = @_;
+  my $role_info = Net::Nostr::Group->roles_from_event($event);
+  my @supported_roles;
+
+  for my $role (@{$role_info->{roles} || []}) {
+    push @supported_roles, $role->{name};
+  }
+  $state->{supported_roles} = \@supported_roles;
+  return;
+}
+
+sub _apply_authoritative_put_user_event {
+  my ($state,         $event) = @_;
+  my ($target_pubkey, @roles) = _target_and_roles_from_group_member_event($event);
+
+  if (!defined $target_pubkey) {
+    return 'put-user event must include one p tag target';
+  }
+
+  $state->{members}{$target_pubkey} = {
+    pubkey => $target_pubkey,
+    roles  => [_sorted_roles(@roles)],
+  };
+  delete $state->{pending_join_requests}{$target_pubkey};
+  return;
+}
+
+sub _apply_authoritative_remove_user_event {
+  my ($state, $event) = @_;
+  my ($target_pubkey) = _target_and_roles_from_group_member_event($event);
+
+  if (!defined $target_pubkey) {
+    return 'remove-user event must include one p tag target';
+  }
+
+  delete $state->{members}{$target_pubkey};
+  delete $state->{present_members}{$target_pubkey};
+  delete $state->{pending_join_requests}{$target_pubkey};
+  return;
+}
+
+sub _apply_authoritative_create_invite_event {
+  my ($state,       $event)         = @_;
+  my ($invite_code, $target_pubkey) = _invite_code_and_target_from_group_invite_event($event);
+
+  if (!defined $invite_code) {
+    return 'create-invite event must include one code tag';
+  }
+
+  $state->{pending_invites}{$invite_code} = {code => $invite_code,};
+  if (defined $target_pubkey) {
+    $state->{pending_invites}{$invite_code}{target_pubkey} = $target_pubkey;
+    delete $state->{pending_join_requests}{$target_pubkey};
+  }
+
+  return;
+}
+
+sub _apply_authoritative_join_request_event {
+  my ($state, $event) = @_;
+  my $invite_code   = _invite_code_from_group_join_request_event($event);
+  my $joiner_pubkey = _effective_actor_pubkey_from_group_event($event);
+  my $joiner_mask   = _irc_mask_from_group_event($event);
+
+  if (!_non_empty_scalar($joiner_pubkey)) {
+    return;
+  }
+  if (_join_request_existing_member($state, $joiner_pubkey)) {
+    return;
+  }
+  if (defined($invite_code) && exists $state->{pending_invites}{$invite_code}) {
+    _join_request_with_invite($state, $joiner_pubkey, $invite_code);
+    return;
+  }
+  if (!$state->{metadata}{closed}) {
+    _mark_authoritative_member_present($state, $joiner_pubkey);
+    return;
+  }
+  if ($state->{metadata}{restricted} && !defined($invite_code)) {
+    _record_pending_join_request($state, $joiner_pubkey, $joiner_mask);
+  }
+
+  return;
+}
+
+sub _join_request_existing_member {
+  my ($state, $joiner_pubkey) = @_;
+
+  if (!exists $state->{members}{$joiner_pubkey}) {
+    return 0;
+  }
+
+  _mark_authoritative_member_present($state, $joiner_pubkey);
+  return 1;
+}
+
+sub _join_request_with_invite {
+  my ($state, $joiner_pubkey, $invite_code) = @_;
+  my $invite = $state->{pending_invites}{$invite_code};
+
+  if (defined($invite->{target_pubkey}) && $invite->{target_pubkey} ne $joiner_pubkey) {
+    return;
+  }
+
+  delete $state->{pending_invites}{$invite_code};
+  _mark_authoritative_member_present($state, $joiner_pubkey);
+  return;
+}
+
+sub _mark_authoritative_member_present {
+  my ($state, $pubkey) = @_;
+
+  if (!exists $state->{members}{$pubkey}) {
+    $state->{members}{$pubkey} = {
+      pubkey => $pubkey,
+      roles  => [],
+    };
+  }
+  delete $state->{pending_join_requests}{$pubkey};
+  $state->{present_members}{$pubkey} = 1;
+  return;
+}
+
+sub _record_pending_join_request {
+  my ($state, $joiner_pubkey, $joiner_mask) = @_;
+
+  $state->{pending_join_requests}{$joiner_pubkey} = {pubkey => $joiner_pubkey,};
+  if (defined $joiner_mask) {
+    $state->{pending_join_requests}{$joiner_pubkey}{actor_mask} = $joiner_mask;
+  }
+  return;
+}
+
+sub _apply_authoritative_leave_request_event {
+  my ($state, $event) = @_;
+  my $leaver_pubkey = _effective_actor_pubkey_from_group_event($event);
+
+  if (!_non_empty_scalar($leaver_pubkey)) {
+    return;
+  }
+
+  delete $state->{members}{$leaver_pubkey};
+  delete $state->{present_members}{$leaver_pubkey};
+  delete $state->{pending_join_requests}{$leaver_pubkey};
+  return;
+}
+
+sub _authoritative_channel_view_from_state {
+  my ($context, $state, $args) = @_;
+  my $metadata              = $state->{metadata};
+  my @derived_members       = _member_views($state->{members});
+  my @retained_members      = @derived_members;
+  my @present_members       = _member_views($state->{members}, $state->{present_members});
+  my @pending_invites       = _copied_hash_values($state->{pending_invites});
+  my @pending_join_requests = _copied_hash_values($state->{pending_join_requests});
+
+  if ($metadata->{tombstoned}) {
+    @derived_members       = ();
+    @present_members       = ();
+    @pending_invites       = ();
+    @pending_join_requests = ();
+  }
+
+  my %view = (
+    operation             => 'authoritative_channel_view',
+    authority_profile     => 'nip29',
+    object_type           => 'chat.channel',
+    object_id             => "irc:$context->{network}:$context->{target}",
+    group_host            => $context->{group_host},
+    group_id              => $context->{group_id},
+    group_ref             => $context->{group_ref},
+    channel_modes         => _channel_modes_from_metadata($metadata),
+    supported_roles       => [@{$state->{supported_roles}}],
+    members               => \@derived_members,
+    present_members       => \@present_members,
+    pending_invites       => \@pending_invites,
+    pending_join_requests => \@pending_join_requests,
+  );
+
+  _add_metadata_fields_to_view(\%view, $metadata);
+  if ($metadata->{tombstoned}) {
+    $view{retained_members} = \@retained_members;
+    $view{tombstoned}       = JSON::true;
+  }
+  if (defined $args->{actor_pubkey}) {
+    $view{admission} = _authoritative_view_admission(\%view, $state, $args, \@present_members);
+  }
+
+  return %view;
+}
+
+sub _member_views {
+  my ($members, $present_members) = @_;
+  my @views;
+
+  for my $pubkey (sort keys %{$members}) {
+    if (defined($present_members) && !$present_members->{$pubkey}) {
+      next;
+    }
+    push @views, _member_view($members->{$pubkey});
+  }
+
+  return @views;
+}
+
+sub _member_view {
+  my ($member) = @_;
+
+  return {
+    pubkey                => $member->{pubkey},
+    roles                 => [@{$member->{roles} || []}],
+    presentational_prefix => _presentational_prefix_for_roles($member->{roles}),
+  };
+}
+
+sub _copied_hash_values {
+  my ($values_by_key) = @_;
+  my @values;
+
+  for my $key (sort keys %{$values_by_key}) {
+    my %value = %{$values_by_key->{$key}};
+    push @values, \%value;
+  }
+
+  return @values;
+}
+
+sub _channel_modes_from_metadata {
+  my ($metadata) = @_;
+  my $modes = q{+};
+
+  if ($metadata->{closed}) {
+    $modes .= 'i';
+  }
+  if (defined($metadata->{channel_key}) && length($metadata->{channel_key})) {
+    $modes .= 'k';
+  }
+  if (defined $metadata->{user_limit}) {
+    $modes .= 'l';
+  }
+  if ($metadata->{moderated}) {
+    $modes .= 'm';
+  }
+  $modes .= 'n';
+  if ($metadata->{topic_restricted}) {
+    $modes .= 't';
+  }
+
+  return $modes;
+}
+
+sub _add_metadata_fields_to_view {
+  my ($view, $metadata) = @_;
+
+  _add_non_empty_array_field($view, $metadata, 'ban_masks');
+  _add_non_empty_array_field($view, $metadata, 'exception_masks');
+  _add_non_empty_array_field($view, $metadata, 'invite_exception_masks');
+  _add_defined_field($view, $metadata, 'channel_key');
+  _add_defined_field($view, $metadata, 'user_limit');
+  _add_defined_field($view, $metadata, 'topic');
+  _add_defined_field($view, $metadata, 'topic_actor_pubkey');
+  if ($metadata->{private}) {
+    $view->{private} = JSON::true;
+  }
+  if ($metadata->{restricted}) {
+    $view->{restricted} = JSON::true;
+  }
+  if ($metadata->{hidden}) {
+    $view->{hidden} = JSON::true;
+  }
+
+  return;
+}
+
+sub _add_non_empty_array_field {
+  my ($target, $source, $field) = @_;
+
+  if (ref($source->{$field}) eq 'ARRAY' && @{$source->{$field}}) {
+    $target->{$field} = [@{$source->{$field}}];
+  }
+  return;
+}
+
+sub _add_defined_field {
+  my ($target, $source, $field) = @_;
+
+  if (defined $source->{$field}) {
+    $target->{$field} = $source->{$field};
+  }
+  return;
+}
+
+sub _authoritative_view_admission {
+  my ($view, $state, $args, $present_members) = @_;
+  my $checks    = _authoritative_admission_checks($state, $args, $present_members);
+  my %admission = (
+    allowed => _authoritative_admission_allowed($state->{metadata}, $checks),
+    member  => _authoritative_admission_member($state->{metadata}, $checks),
+    reason  => _authoritative_admission_reason($state->{metadata}, $checks),
+  );
+
+  _add_authoritative_admission_optional_fields(\%admission, $state->{metadata}, $checks);
+  return \%admission;
+}
+
+sub _authoritative_admission_checks {
+  my ($state, $args, $present_members) = @_;
+  my $metadata        = $state->{metadata};
+  my $actor_pubkey    = $args->{actor_pubkey};
+  my $actor_mask      = $args->{actor_mask};
+  my $member          = $state->{members}{$actor_pubkey};
+  my $invite          = _pending_invite_for_pubkey($state->{pending_invites}, $actor_pubkey);
+  my $excepted        = 0;
+  my $invite_excepted = 0;
+  my $banned          = 0;
+  my $bad_key         = 0;
+  my $channel_full    = 0;
+
+  if (defined $actor_mask) {
+    $excepted        = _actor_mask_matches_masks($metadata->{exception_masks},        $actor_mask);
+    $invite_excepted = _actor_mask_matches_masks($metadata->{invite_exception_masks}, $actor_mask);
+  }
+  if (!$member && defined($actor_mask)) {
+    $banned = _actor_mask_matches_masks($metadata->{ban_masks}, $actor_mask) && !$excepted ? 1 : 0;
+  }
+  if (!$member && defined($metadata->{channel_key})) {
+    $bad_key = !defined($args->{join_key}) || $args->{join_key} ne $metadata->{channel_key} ? 1 : 0;
+  }
+  if (!$member && defined($metadata->{user_limit}) && @{$present_members} >= $metadata->{user_limit}) {
+    $channel_full = 1;
+  }
+
+  return {
+    member          => $member,
+    invite          => $invite,
+    invite_excepted => $invite_excepted,
+    pending_request => $state->{pending_join_requests}{$actor_pubkey},
+    banned          => $banned,
+    bad_key         => $bad_key,
+    channel_full    => $channel_full,
+  };
+}
+
+sub _authoritative_admission_allowed {
+  my ($metadata, $checks) = @_;
+
+  if ($metadata->{tombstoned} || $checks->{banned} || $checks->{bad_key} || $checks->{channel_full}) {
+    return JSON::false;
+  }
+  if ($checks->{member} || $checks->{invite} || $checks->{invite_excepted} || !$metadata->{closed}) {
+    return JSON::true;
+  }
+
+  return JSON::false;
+}
+
+sub _authoritative_admission_member {
+  my ($metadata, $checks) = @_;
+
+  if ($metadata->{tombstoned}) {
+    return JSON::false;
+  }
+
+  return $checks->{member} ? JSON::true : JSON::false;
+}
+
+sub _authoritative_admission_reason {
+  my ($metadata, $checks) = @_;
+
+  if ($metadata->{tombstoned}) {
+    return 'deleted';
+  }
+  if ($checks->{banned}) {
+    return '+b';
+  }
+  if ($checks->{bad_key}) {
+    return '+k';
+  }
+  if ($checks->{channel_full}) {
+    return '+l';
+  }
+  if ($checks->{member} || $checks->{invite} || $checks->{invite_excepted} || !$metadata->{closed}) {
+    return q{};
+  }
+  if ($metadata->{restricted}) {
+    return defined($checks->{pending_request}) ? 'join_request_pending' : 'join_request';
+  }
+
+  return '+i';
+}
+
+sub _add_authoritative_admission_optional_fields {
+  my ($admission, $metadata, $checks) = @_;
+
+  if ($metadata->{tombstoned}) {
+    $admission->{deleted} = JSON::true;
+    return;
+  }
+  if (_should_include_invite_code($checks)) {
+    $admission->{invite_code} = $checks->{invite}{code};
+  }
+  if (_should_request_join($metadata, $checks)) {
+    $admission->{request_join} = JSON::true;
+  }
+  if (defined $checks->{pending_request}) {
+    $admission->{pending_request} = JSON::true;
+  }
+
+  return;
+}
+
+sub _should_include_invite_code {
+  my ($checks) = @_;
+
+  if (!$checks->{banned} && !$checks->{bad_key} && !$checks->{channel_full} && defined($checks->{invite})) {
+    return 1;
+  }
+
+  return 0;
+}
+
+sub _should_request_join {
+  my ($metadata, $checks) = @_;
+
+  if ($checks->{banned} || $checks->{bad_key} || $checks->{channel_full}) {
+    return 0;
+  }
+  if ($checks->{member} || $checks->{invite} || $checks->{invite_excepted}) {
+    return 0;
+  }
+  if ($metadata->{closed} && $metadata->{restricted} && !defined($checks->{pending_request})) {
+    return 1;
+  }
+
+  return 0;
 }
 
 sub _authoritative_permission_view {
   my ($self, %args) = @_;
 
-  my $session_config = ref($args{session_config}) eq 'HASH'
-    ? $args{session_config}
-    : {};
-  return (undef, undef, undef, 'authoritative permission derivation requires session_config.authority_profile = nip29')
-    unless ($session_config->{authority_profile} || '') eq 'nip29';
+  my $session_config = _session_config_from_args($args{session_config});
+  if (($session_config->{authority_profile} || q{}) ne 'nip29') {
+    return (undef, undef, undef,
+      'authoritative permission derivation requires session_config.authority_profile = nip29');
+  }
 
   my $network = $args{network};
-  return (undef, undef, undef, 'IRC network is required')
-    unless defined $network && length $network;
+  if (!_non_empty_scalar($network)) {
+    return (undef, undef, undef, 'IRC network is required');
+  }
 
   my $target = $args{target};
-  return (undef, undef, undef, 'IRC target is required')
-    unless defined $target && length $target;
-  return (undef, undef, undef, 'authoritative permission target must be a channel')
-    unless $target =~ /\A[#&]/mx;
+  if (!_non_empty_scalar($target)) {
+    return (undef, undef, undef, 'IRC target is required');
+  }
+  if (!_is_channel_target($target)) {
+    return (undef, undef, undef, 'authoritative permission target must be a channel');
+  }
 
   my ($group_host, $group_id, $error) = _resolve_nip29_group_binding(
     network        => $network,
     session_config => $session_config,
     target         => $target,
   );
-  return (undef, undef, undef, $error) if defined $error;
+  if (defined $error) {
+    return (undef, undef, undef, $error);
+  }
 
   my $authoritative_events = $args{authoritative_events};
-  return (undef, undef, undef, 'authoritative_events must be an array')
-    unless ref($authoritative_events) eq 'ARRAY';
-  return (undef, undef, undef, 'actor_pubkey is required')
-    unless defined($args{actor_pubkey}) && !ref($args{actor_pubkey}) && $args{actor_pubkey} =~ /\A[0-9a-f]{64}\z/mx;
-  return (undef, undef, undef, 'authoritative state unavailable')
-    unless @{$authoritative_events};
+  if (ref($authoritative_events) ne 'ARRAY') {
+    return (undef, undef, undef, 'authoritative_events must be an array');
+  }
+  if (!_valid_hex_pubkey($args{actor_pubkey})) {
+    return (undef, undef, undef, 'actor_pubkey is required');
+  }
+  if (!@{$authoritative_events}) {
+    return (undef, undef, undef, 'authoritative state unavailable');
+  }
 
   my $view_result = $self->derive_authoritative_channel_view(%args);
-  return (undef, undef, undef, $view_result->{error}) unless $view_result->{valid};
+  if (!$view_result->{valid}) {
+    return (undef, undef, undef, $view_result->{error});
+  }
   my $view = $view_result->{view}[0];
-  return (undef, undef, undef, 'authoritative channel view is required')
-    unless ref($view) eq 'HASH';
+  if (ref($view) ne 'HASH') {
+    return (undef, undef, undef, 'authoritative channel view is required');
+  }
 
   return ($group_host, $group_id, $view, undef);
 }
 
 sub _group_metadata_from_authoritative_view {
   my ($view) = @_;
-  return {
-    closed           => ($view->{channel_modes} || '') =~ /\+[^ ]*i/mx ? 1 : 0,
-    moderated        => ($view->{channel_modes} || '') =~ /\+[^ ]*m/mx ? 1 : 0,
-    topic_restricted => ($view->{channel_modes} || '') =~ /\+[^ ]*t/mx ? 1 : 0,
-    private          => $view->{private} ? 1 : 0,
-    restricted       => $view->{restricted} ? 1 : 0,
-    hidden           => $view->{hidden} ? 1 : 0,
-    ban_masks        => ref($view->{ban_masks}) eq 'ARRAY' ? [ @{$view->{ban_masks}} ] : [],
-    (ref($view->{exception_masks}) eq 'ARRAY' && @{$view->{exception_masks}} ? (exception_masks => [ @{$view->{exception_masks}} ]) : ()),
-    (ref($view->{invite_exception_masks}) eq 'ARRAY' && @{$view->{invite_exception_masks}} ? (invite_exception_masks => [ @{$view->{invite_exception_masks}} ]) : ()),
-    (defined($view->{channel_key}) ? (channel_key => $view->{channel_key}) : ()),
-    (defined($view->{user_limit}) ? (user_limit => $view->{user_limit}) : ()),
-    tombstoned       => $view->{tombstoned} ? 1 : 0,
-    (exists($view->{topic}) ? (topic => $view->{topic}) : ()),
-  };
+  my %metadata = (
+    closed           => _channel_has_mode($view->{channel_modes}, 'i'),
+    moderated        => _channel_has_mode($view->{channel_modes}, 'm'),
+    topic_restricted => _channel_has_mode($view->{channel_modes}, 't'),
+    private          => $view->{private}                   ? 1                       : 0,
+    restricted       => $view->{restricted}                ? 1                       : 0,
+    hidden           => $view->{hidden}                    ? 1                       : 0,
+    ban_masks        => ref($view->{ban_masks}) eq 'ARRAY' ? [@{$view->{ban_masks}}] : [],
+    tombstoned       => $view->{tombstoned}                ? 1                       : 0,
+  );
+
+  _copy_optional_array_field(\%metadata, $view, 'exception_masks');
+  _copy_optional_array_field(\%metadata, $view, 'invite_exception_masks');
+  _copy_optional_defined_field(\%metadata, $view, 'channel_key');
+  _copy_optional_defined_field(\%metadata, $view, 'user_limit');
+  if (exists $view->{topic}) {
+    $metadata{topic} = $view->{topic};
+  }
+
+  return \%metadata;
+}
+
+sub _copy_optional_array_field {
+  my ($target, $source, $field) = @_;
+
+  if (ref($source->{$field}) eq 'ARRAY' && @{$source->{$field}}) {
+    $target->{$field} = [@{$source->{$field}}];
+  }
+  return;
+}
+
+sub _copy_optional_defined_field {
+  my ($target, $source, $field) = @_;
+
+  if (defined $source->{$field}) {
+    $target->{$field} = $source->{$field};
+  }
+  return;
 }
 
 sub _member_for_pubkey {
   my ($members, $pubkey) = @_;
-  return unless ref($members) eq 'ARRAY';
-  return unless defined $pubkey && !ref($pubkey) && length($pubkey);
+  if (ref($members) ne 'ARRAY') {
+    return;
+  }
+  if (!_non_empty_scalar($pubkey)) {
+    return;
+  }
 
   for my $member (@{$members}) {
-    next unless ref($member) eq 'HASH';
-    next unless defined $member->{pubkey} && $member->{pubkey} eq $pubkey;
+    if (ref($member) ne 'HASH') {
+      next;
+    }
+    if (!defined($member->{pubkey}) || $member->{pubkey} ne $pubkey) {
+      next;
+    }
     return $member;
   }
 
@@ -1393,388 +2199,489 @@ sub _member_for_pubkey {
 }
 
 sub _map_nip29_authoritative_input {
-  my ($self, %args) = @_;
+  my ($self,    %args)          = @_;
+  my ($context, $context_error) = _nip29_authoritative_input_context(\%args);
+  if (defined $context_error) {
+    return _error($context_error);
+  }
 
-  my $session_config = ref($args{session_config}) eq 'HASH'
-    ? $args{session_config}
-    : {};
-  my $command = $args{command} || '';
-  my $target = $args{target};
-  my $created_at = $args{created_at};
+  my %mapper_for = (
+    KICK     => \&_map_nip29_kick_input,
+    INVITE   => \&_map_nip29_invite_input,
+    JOIN     => \&_map_nip29_join_input,
+    PART     => \&_map_nip29_part_input,
+    TOPIC    => \&_map_nip29_topic_input,
+    DELETE   => \&_map_nip29_delete_input,
+    UNDELETE => \&_map_nip29_undelete_input,
+    MODE     => \&_map_nip29_mode_input,
+  );
 
-  return _error('created_at is required')
-    unless defined $created_at;
+  my $mapper = $mapper_for{$context->{command}};
+  if (!defined $mapper) {
+    return _error('Unsupported authoritative IRC command');
+  }
+
+  return $mapper->(\%args, $context);
+}
+
+sub _nip29_authoritative_input_context {
+  my ($args) = @_;
+  my $session_config = _session_config_from_args($args->{session_config});
+
+  if (!defined $args->{created_at}) {
+    return (undef, 'created_at is required');
+  }
 
   my ($group_host, $group_id, $binding_error) = _resolve_nip29_group_binding(
-    network        => $args{network},
+    network        => $args->{network},
     session_config => $session_config,
-    target         => $target,
+    target         => $args->{target},
   );
-  return _error($binding_error) if defined $binding_error;
-
-  my $actor_pubkey = $args{actor_pubkey};
-  return _error('authoritative NIP-29 mapping requires actor_pubkey')
-    unless defined $actor_pubkey && $actor_pubkey =~ /\A[0-9a-f]{64}\z/mx;
-  my $signing_pubkey = $args{signing_pubkey};
-  my $authority_event_id = $args{authority_event_id};
-  my $authority_sequence = $args{authority_sequence};
-  if (defined $signing_pubkey || defined $authority_event_id || defined $authority_sequence) {
-    return _error('authoritative NIP-29 delegated signing requires signing_pubkey')
-      unless defined $signing_pubkey && $signing_pubkey =~ /\A[0-9a-f]{64}\z/mx;
-    return _error('authoritative NIP-29 delegated signing requires authority_event_id')
-      unless defined $authority_event_id && $authority_event_id =~ /\A[0-9a-f]{64}\z/mx;
-    return _error('authoritative NIP-29 delegated signing requires authority_sequence')
-      unless defined $authority_sequence && !ref($authority_sequence) && $authority_sequence =~ /\A[1-9]\d*\z/mx;
+  if (defined $binding_error) {
+    return (undef, $binding_error);
   }
-  my $event_pubkey = defined $signing_pubkey ? $signing_pubkey : $actor_pubkey;
 
-  if ($command eq 'KICK') {
-    my $target_pubkey = $args{target_pubkey};
-    return _error('authoritative NIP-29 KICK requires target_pubkey')
-      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/mx;
+  my $actor_pubkey = $args->{actor_pubkey};
+  if (!_valid_hex_pubkey($actor_pubkey)) {
+    return (undef, 'authoritative NIP-29 mapping requires actor_pubkey');
+  }
 
-    my $event = Net::Nostr::Group->remove_user(
-      pubkey     => $event_pubkey,
-      group_id   => $group_id,
-      target     => $target_pubkey,
-      created_at => $created_at + 0,
-      reason     => defined $args{text} ? $args{text} : '',
-    );
-    my $event_hash = $event->to_hash;
-    _apply_delegated_authority_tags(
-      event_hash         => $event_hash,
+  my $delegation_error = _delegated_authority_error($args);
+  if (defined $delegation_error) {
+    return (undef, $delegation_error);
+  }
+
+  my $event_pubkey = defined $args->{signing_pubkey} ? $args->{signing_pubkey} : $actor_pubkey;
+  return (
+    {
+      command            => $args->{command} || q{},
+      target             => $args->{target},
+      created_at         => $args->{created_at},
+      group_host         => $group_host,
+      group_id           => $group_id,
       actor_pubkey       => $actor_pubkey,
-      signing_pubkey     => $signing_pubkey,
-      authority_event_id => $authority_event_id,
-      authority_sequence => $authority_sequence,
-    );
-    return {
-      valid => 1,
-      event => $event_hash,
-    };
+      event_pubkey       => $event_pubkey,
+      signing_pubkey     => $args->{signing_pubkey},
+      authority_event_id => $args->{authority_event_id},
+      authority_sequence => $args->{authority_sequence},
+    },
+    undef,
+  );
+}
+
+sub _delegated_authority_error {
+  my ($args) = @_;
+
+  if ( !defined($args->{signing_pubkey})
+    && !defined($args->{authority_event_id})
+    && !defined($args->{authority_sequence})) {
+    return;
+  }
+  if (!_valid_hex_pubkey($args->{signing_pubkey})) {
+    return 'authoritative NIP-29 delegated signing requires signing_pubkey';
+  }
+  if (!_valid_hex_pubkey($args->{authority_event_id})) {
+    return 'authoritative NIP-29 delegated signing requires authority_event_id';
+  }
+  if (!_positive_integer_string($args->{authority_sequence})) {
+    return 'authoritative NIP-29 delegated signing requires authority_sequence';
   }
 
-  if ($command eq 'INVITE') {
-    my $target_pubkey = $args{target_pubkey};
-    return _error('authoritative NIP-29 INVITE requires target_pubkey')
-      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/mx;
+  return;
+}
 
-    my $invite_code = $args{invite_code};
-    return _error('authoritative NIP-29 INVITE requires invite_code')
-      unless defined $invite_code && !ref($invite_code) && length($invite_code);
+sub _map_nip29_kick_input {
+  my ($args, $context) = @_;
 
-    my $event = Net::Nostr::Group->create_invite(
-      pubkey     => $event_pubkey,
-      group_id   => $group_id,
-      code       => $invite_code,
-      created_at => $created_at + 0,
-      reason     => defined $args{text} ? $args{text} : '',
-    );
-    my $event_hash = $event->to_hash;
-    push @{$event_hash->{tags}}, [ 'p', $target_pubkey ];
-    _apply_delegated_authority_tags(
-      event_hash         => $event_hash,
-      actor_pubkey       => $actor_pubkey,
-      signing_pubkey     => $signing_pubkey,
-      authority_event_id => $authority_event_id,
-      authority_sequence => $authority_sequence,
-    );
-
-    return {
-      valid => 1,
-      event => $event_hash,
-    };
+  if (!_valid_hex_pubkey($args->{target_pubkey})) {
+    return _error('authoritative NIP-29 KICK requires target_pubkey');
   }
 
-  if ($command eq 'JOIN') {
-    my $invite_code = $args{invite_code};
-    return _error('authoritative NIP-29 JOIN invite_code must be a non-empty string when supplied')
-      if defined($invite_code) && (ref($invite_code) || !length($invite_code));
+  my $event = Net::Nostr::Group->remove_user(
+    pubkey     => $context->{event_pubkey},
+    group_id   => $context->{group_id},
+    target     => $args->{target_pubkey},
+    created_at => $context->{created_at} + 0,
+    reason     => defined $args->{text} ? $args->{text} : q{},
+  );
+  return _nip29_event_result($event->to_hash, $context);
+}
 
-    my @events;
-    if ($args{create_channel}) {
-      my $group_metadata = $args{group_metadata};
-      $group_metadata = {}
-        unless ref($group_metadata) eq 'HASH';
-      my %metadata = %{$group_metadata};
-      $metadata{name} = $target
-        unless defined $metadata{name} && length($metadata{name});
+sub _map_nip29_invite_input {
+  my ($args, $context) = @_;
 
-      push @events,
-        _build_group_metadata_event_hash(
-          event_pubkey        => $event_pubkey,
-          group_id            => $group_id,
-          created_at          => $created_at + 0,
-          metadata            => \%metadata,
-          actor_pubkey        => $actor_pubkey,
-          signing_pubkey      => $signing_pubkey,
-          authority_event_id  => $authority_event_id,
-          authority_sequence  => $authority_sequence,
-        ),
-        _build_group_put_user_event_hash(
-          event_pubkey        => $event_pubkey,
-          group_id            => $group_id,
-          created_at          => $created_at + 0,
-          target_pubkey       => $actor_pubkey,
-          roles               => ['irc.operator'],
-          actor_pubkey        => $actor_pubkey,
-          signing_pubkey      => $signing_pubkey,
-          authority_event_id  => $authority_event_id,
-          authority_sequence  => $authority_sequence,
-        );
-    }
-
-    my $event = Net::Nostr::Group->join_request(
-      pubkey     => $event_pubkey,
-      group_id   => $group_id,
-      created_at => $created_at + 0,
-      (defined $invite_code ? (code => $invite_code) : ()),
-      reason     => defined $args{text} ? $args{text} : '',
-    );
-    my $event_hash = $event->to_hash;
-    push @{$event_hash->{tags}}, [ 'overnet_irc_mask', $args{actor_mask} ]
-      if defined $args{actor_mask};
-    _apply_delegated_authority_tags(
-      event_hash         => $event_hash,
-      actor_pubkey       => $actor_pubkey,
-      signing_pubkey     => $signing_pubkey,
-      authority_event_id => $authority_event_id,
-      authority_sequence => $authority_sequence,
-    );
-    push @events, $event_hash;
-
-    return {
-      valid => 1,
-      (@events == 1 ? (event => $events[0]) : (events => \@events)),
-    };
+  if (!_valid_hex_pubkey($args->{target_pubkey})) {
+    return _error('authoritative NIP-29 INVITE requires target_pubkey');
+  }
+  if (!_non_empty_scalar($args->{invite_code})) {
+    return _error('authoritative NIP-29 INVITE requires invite_code');
   }
 
-  if ($command eq 'PART') {
-    my $event = Net::Nostr::Group->leave_request(
-      pubkey     => $event_pubkey,
-      group_id   => $group_id,
-      created_at => $created_at + 0,
-      reason     => defined $args{text} ? $args{text} : '',
+  my $event = Net::Nostr::Group->create_invite(
+    pubkey     => $context->{event_pubkey},
+    group_id   => $context->{group_id},
+    code       => $args->{invite_code},
+    created_at => $context->{created_at} + 0,
+    reason     => defined $args->{text} ? $args->{text} : q{},
+  );
+  my $event_hash = $event->to_hash;
+  push @{$event_hash->{tags}}, ['p', $args->{target_pubkey}];
+  return _nip29_event_result($event_hash, $context);
+}
+
+sub _map_nip29_join_input {
+  my ($args, $context) = @_;
+  my $invite_code = $args->{invite_code};
+
+  if (defined($invite_code) && !_non_empty_scalar($invite_code)) {
+    return _error('authoritative NIP-29 JOIN invite_code must be a non-empty string when supplied');
+  }
+
+  my @events = _initial_join_events($args, $context);
+  my $event  = Net::Nostr::Group->join_request(
+    pubkey     => $context->{event_pubkey},
+    group_id   => $context->{group_id},
+    created_at => $context->{created_at} + 0,
+    (defined $invite_code ? (code => $invite_code) : ()),
+    reason => defined $args->{text} ? $args->{text} : q{},
+  );
+  my $event_hash = $event->to_hash;
+  if (defined $args->{actor_mask}) {
+    push @{$event_hash->{tags}}, ['overnet_irc_mask', $args->{actor_mask}];
+  }
+  _apply_delegated_authority_tags_for_context($event_hash, $context);
+  push @events, $event_hash;
+
+  return {
+    valid => 1,
+    (@events == 1 ? (event => $events[0]) : (events => \@events)),
+  };
+}
+
+sub _initial_join_events {
+  my ($args, $context) = @_;
+  my @events;
+
+  if (!$args->{create_channel}) {
+    return @events;
+  }
+
+  my $group_metadata = ref($args->{group_metadata}) eq 'HASH' ? $args->{group_metadata} : {};
+  my %metadata       = %{$group_metadata};
+  if (!_non_empty_scalar($metadata{name})) {
+    $metadata{name} = $context->{target};
+  }
+
+  push @events,
+    _build_group_metadata_event_hash(
+    event_pubkey       => $context->{event_pubkey},
+    group_id           => $context->{group_id},
+    created_at         => $context->{created_at} + 0,
+    metadata           => \%metadata,
+    actor_pubkey       => $context->{actor_pubkey},
+    signing_pubkey     => $context->{signing_pubkey},
+    authority_event_id => $context->{authority_event_id},
+    authority_sequence => $context->{authority_sequence},
+    ),
+    _build_group_put_user_event_hash(
+    event_pubkey       => $context->{event_pubkey},
+    group_id           => $context->{group_id},
+    created_at         => $context->{created_at} + 0,
+    target_pubkey      => $context->{actor_pubkey},
+    roles              => ['irc.operator'],
+    actor_pubkey       => $context->{actor_pubkey},
+    signing_pubkey     => $context->{signing_pubkey},
+    authority_event_id => $context->{authority_event_id},
+    authority_sequence => $context->{authority_sequence},
     );
-    my $event_hash = $event->to_hash;
-    _apply_delegated_authority_tags(
-      event_hash         => $event_hash,
-      actor_pubkey       => $actor_pubkey,
-      signing_pubkey     => $signing_pubkey,
-      authority_event_id => $authority_event_id,
-      authority_sequence => $authority_sequence,
-    );
-    return {
-      valid => 1,
-      event => $event_hash,
-    };
+
+  return @events;
+}
+
+sub _map_nip29_part_input {
+  my ($args, $context) = @_;
+
+  my $event = Net::Nostr::Group->leave_request(
+    pubkey     => $context->{event_pubkey},
+    group_id   => $context->{group_id},
+    created_at => $context->{created_at} + 0,
+    reason     => defined $args->{text} ? $args->{text} : q{},
+  );
+  return _nip29_event_result($event->to_hash, $context);
+}
+
+sub _map_nip29_topic_input {
+  my ($args, $context) = @_;
+
+  if (!defined $args->{text}) {
+    return _error('TOPIC text is required');
   }
 
-  if ($command eq 'TOPIC') {
-    return _error('TOPIC text is required')
-      unless defined $args{text};
-
-    my $group_metadata = $args{group_metadata} || {};
-    return _error('group_metadata must be an object')
-      if ref($group_metadata) ne 'HASH';
-
-    my %metadata = %{$group_metadata};
-    $metadata{topic} = $args{text};
-
-    return {
-      valid => 1,
-      event => _build_group_metadata_edit_event_hash(
-        event_pubkey        => $event_pubkey,
-        group_id            => $group_id,
-        created_at          => $created_at + 0,
-        metadata            => \%metadata,
-        actor_pubkey        => $actor_pubkey,
-        signing_pubkey      => $signing_pubkey,
-        authority_event_id  => $authority_event_id,
-        authority_sequence  => $authority_sequence,
-      ),
-    };
+  my ($metadata, $metadata_error) = _metadata_arg_hash($args);
+  if (defined $metadata_error) {
+    return _error($metadata_error);
   }
+  $metadata->{topic} = $args->{text};
 
-  if ($command eq 'DELETE') {
-    my $group_metadata = $args{group_metadata} || {};
-    return _error('group_metadata must be an object')
-      if ref($group_metadata) ne 'HASH';
+  return _metadata_edit_event_result($metadata, $context);
+}
 
-    my %metadata = %{$group_metadata};
-    $metadata{tombstoned} = 1;
+sub _map_nip29_delete_input {
+  my ($args, $context) = @_;
 
-    return {
-      valid => 1,
-      event => _build_group_metadata_edit_event_hash(
-        event_pubkey        => $event_pubkey,
-        group_id            => $group_id,
-        created_at          => $created_at + 0,
-        metadata            => \%metadata,
-        actor_pubkey        => $actor_pubkey,
-        signing_pubkey      => $signing_pubkey,
-        authority_event_id  => $authority_event_id,
-        authority_sequence  => $authority_sequence,
-      ),
-    };
+  my ($metadata, $metadata_error) = _metadata_arg_hash($args);
+  if (defined $metadata_error) {
+    return _error($metadata_error);
   }
+  $metadata->{tombstoned} = 1;
 
-  if ($command eq 'UNDELETE') {
-    my $group_metadata = $args{group_metadata} || {};
-    return _error('group_metadata must be an object')
-      if ref($group_metadata) ne 'HASH';
+  return _metadata_edit_event_result($metadata, $context);
+}
 
-    my %metadata = %{$group_metadata};
-    delete $metadata{tombstoned};
+sub _map_nip29_undelete_input {
+  my ($args, $context) = @_;
 
-    return {
-      valid => 1,
-      event => _build_group_metadata_edit_event_hash(
-        event_pubkey        => $event_pubkey,
-        group_id            => $group_id,
-        created_at          => $created_at + 0,
-        metadata            => \%metadata,
-        actor_pubkey        => $actor_pubkey,
-        signing_pubkey      => $signing_pubkey,
-        authority_event_id  => $authority_event_id,
-        authority_sequence  => $authority_sequence,
-      ),
-    };
+  my ($metadata, $metadata_error) = _metadata_arg_hash($args);
+  if (defined $metadata_error) {
+    return _error($metadata_error);
   }
+  delete $metadata->{tombstoned};
 
-  return _error('Unsupported authoritative IRC command')
-    unless $command eq 'MODE';
+  return _metadata_edit_event_result($metadata, $context);
+}
 
-  my $mode = $args{mode};
-  return _error('MODE mode is required')
-    unless defined $mode && length $mode;
+sub _map_nip29_mode_input {
+  my ($args, $context) = @_;
+  my $mode = $args->{mode};
 
-  if ($mode =~ /\A([+-])([ov])\z/mx) {
-    my ($direction, $mode_letter) = ($1, $2);
-    my $target_pubkey = $args{target_pubkey};
-    return _error("authoritative NIP-29 MODE $mode requires target_pubkey")
-      unless defined $target_pubkey && $target_pubkey =~ /\A[0-9a-f]{64}\z/mx;
-
-    my $current_roles = $args{current_roles};
-    return _error("authoritative NIP-29 MODE $mode requires current_roles")
-      unless ref($current_roles) eq 'ARRAY';
-    return _error('current_roles must be an array of non-empty strings')
-      if grep { !defined($_) || ref($_) || !length($_) } @{$current_roles};
-
-    my $role_name = $mode_letter eq 'o' ? 'irc.operator' : 'irc.voice';
-    my %roles = map { $_ => 1 } @{$current_roles};
-    if ($direction eq '+') {
-      $roles{$role_name} = 1;
-    } else {
-      delete $roles{$role_name};
-    }
-
-    my $event = Net::Nostr::Group->put_user(
-      pubkey     => $event_pubkey,
-      group_id   => $group_id,
-      target     => $target_pubkey,
-      created_at => $created_at + 0,
-      roles      => [ _sorted_roles(keys %roles) ],
-    );
-    my $event_hash = $event->to_hash;
-    _apply_delegated_authority_tags(
-      event_hash         => $event_hash,
-      actor_pubkey       => $actor_pubkey,
-      signing_pubkey     => $signing_pubkey,
-      authority_event_id => $authority_event_id,
-      authority_sequence => $authority_sequence,
-    );
-    return {
-      valid => 1,
-      event => $event_hash,
-    };
+  if (!_non_empty_scalar($mode)) {
+    return _error('MODE mode is required');
   }
-
-  if ($mode =~ /\A([+-])([beIklimt])\z/mx) {
-    my ($direction, $mode_letter) = ($1, $2);
-    my $group_metadata = $args{group_metadata} || {};
-    return _error('group_metadata must be an object')
-      if ref($group_metadata) ne 'HASH';
-
-    my %metadata = %{$group_metadata};
-    if ($mode_letter eq 'b') {
-      my $ban_mask = $args{ban_mask};
-      return _error("authoritative NIP-29 MODE $mode requires ban_mask")
-        unless defined $ban_mask && !ref($ban_mask) && length($ban_mask);
-
-      my %ban_masks = map { $_ => 1 } @{_normalized_ban_masks($metadata{ban_masks})};
-      if ($direction eq '+') {
-        $ban_masks{$ban_mask} = 1;
-      } else {
-        delete $ban_masks{$ban_mask};
-      }
-      $metadata{ban_masks} = [ sort keys %ban_masks ];
-    } elsif ($mode_letter eq 'e') {
-      my $exception_mask = $args{exception_mask};
-      return _error("authoritative NIP-29 MODE $mode requires exception_mask")
-        unless defined $exception_mask && !ref($exception_mask) && length($exception_mask);
-
-      my %exception_masks = map { $_ => 1 } @{_normalized_mask_list($metadata{exception_masks})};
-      if ($direction eq '+') {
-        $exception_masks{$exception_mask} = 1;
-      } else {
-        delete $exception_masks{$exception_mask};
-      }
-      $metadata{exception_masks} = [ sort keys %exception_masks ];
-    } elsif ($mode_letter eq 'I') {
-      my $invite_exception_mask = $args{invite_exception_mask};
-      return _error("authoritative NIP-29 MODE $mode requires invite_exception_mask")
-        unless defined $invite_exception_mask && !ref($invite_exception_mask) && length($invite_exception_mask);
-
-      my %invite_exception_masks = map { $_ => 1 } @{_normalized_mask_list($metadata{invite_exception_masks})};
-      if ($direction eq '+') {
-        $invite_exception_masks{$invite_exception_mask} = 1;
-      } else {
-        delete $invite_exception_masks{$invite_exception_mask};
-      }
-      $metadata{invite_exception_masks} = [ sort keys %invite_exception_masks ];
-    } elsif ($mode_letter eq 'k') {
-      if ($direction eq '+') {
-        my $channel_key = $args{channel_key};
-        return _error("authoritative NIP-29 MODE $mode requires channel_key")
-          unless defined $channel_key && !ref($channel_key) && length($channel_key);
-        $metadata{channel_key} = $channel_key;
-      } else {
-        delete $metadata{channel_key};
-      }
-    } elsif ($mode_letter eq 'l') {
-      if ($direction eq '+') {
-        my $user_limit = $args{user_limit};
-        return _error("authoritative NIP-29 MODE $mode requires user_limit")
-          unless defined $user_limit && !ref($user_limit) && $user_limit =~ /\A[1-9][0-9]*\z/mx;
-        $metadata{user_limit} = 0 + $user_limit;
-      } else {
-        delete $metadata{user_limit};
-      }
-    } elsif ($mode_letter eq 'i') {
-      $metadata{closed} = $direction eq '+' ? 1 : 0;
-    } elsif ($mode_letter eq 'm') {
-      $metadata{moderated} = $direction eq '+' ? 1 : 0;
-    } elsif ($mode_letter eq 't') {
-      $metadata{topic_restricted} = $direction eq '+' ? 1 : 0;
-    }
-
-    return {
-      valid => 1,
-      event => _build_group_metadata_edit_event_hash(
-        event_pubkey        => $event_pubkey,
-        group_id            => $group_id,
-        created_at          => $created_at + 0,
-        metadata            => \%metadata,
-        actor_pubkey        => $actor_pubkey,
-        signing_pubkey      => $signing_pubkey,
-        authority_event_id  => $authority_event_id,
-        authority_sequence  => $authority_sequence,
-      ),
-    };
+  if ($mode =~ /\A[+-][ov]\z/msx) {
+    return _map_nip29_role_mode_input($args, $context, $mode);
+  }
+  if ($mode =~ /\A[+-][beIklimt]\z/msx) {
+    return _map_nip29_metadata_mode_input($args, $context, $mode);
   }
 
   return _error("Unsupported authoritative NIP-29 MODE: $mode");
+}
+
+sub _map_nip29_role_mode_input {
+  my ($args, $context, $mode) = @_;
+  my $direction   = substr $mode, 0, 1;
+  my $mode_letter = substr $mode, 1, 1;
+
+  if (!_valid_hex_pubkey($args->{target_pubkey})) {
+    return _error("authoritative NIP-29 MODE $mode requires target_pubkey");
+  }
+  if (ref($args->{current_roles}) ne 'ARRAY') {
+    return _error("authoritative NIP-29 MODE $mode requires current_roles");
+  }
+  if (!_valid_non_empty_scalar_array($args->{current_roles})) {
+    return _error('current_roles must be an array of non-empty strings');
+  }
+
+  my $role_name = $mode_letter eq 'o' ? 'irc.operator' : 'irc.voice';
+  my %roles     = map { $_ => 1 } @{$args->{current_roles}};
+  if ($direction eq q{+}) {
+    $roles{$role_name} = 1;
+  } else {
+    delete $roles{$role_name};
+  }
+
+  my $event = Net::Nostr::Group->put_user(
+    pubkey     => $context->{event_pubkey},
+    group_id   => $context->{group_id},
+    target     => $args->{target_pubkey},
+    created_at => $context->{created_at} + 0,
+    roles      => [_sorted_roles(keys %roles)],
+  );
+  return _nip29_event_result($event->to_hash, $context);
+}
+
+sub _map_nip29_metadata_mode_input {
+  my ($args, $context, $mode) = @_;
+  my $direction   = substr $mode, 0, 1;
+  my $mode_letter = substr $mode, 1, 1;
+  my ($metadata, $metadata_error) = _metadata_arg_hash($args);
+
+  if (defined $metadata_error) {
+    return _error($metadata_error);
+  }
+
+  my $mode_error = _apply_nip29_metadata_mode($metadata, $args, $mode, $direction, $mode_letter);
+  if (defined $mode_error) {
+    return _error($mode_error);
+  }
+
+  return _metadata_edit_event_result($metadata, $context);
+}
+
+sub _apply_nip29_metadata_mode {
+  my ($metadata, $args, $mode, $direction, $mode_letter) = @_;
+  my %applier_for = (
+    b => \&_apply_nip29_ban_mode,
+    e => \&_apply_nip29_exception_mode,
+    I => \&_apply_nip29_invite_exception_mode,
+    k => \&_apply_nip29_key_mode,
+    l => \&_apply_nip29_limit_mode,
+    i => \&_apply_nip29_closed_mode,
+    m => \&_apply_nip29_moderated_mode,
+    t => \&_apply_nip29_topic_restricted_mode,
+  );
+  my $applier = $applier_for{$mode_letter};
+
+  return $applier->($metadata, $args, $mode, $direction);
+}
+
+sub _apply_nip29_ban_mode {
+  my ($metadata, $args, $mode, $direction) = @_;
+
+  if (!_non_empty_scalar($args->{ban_mask})) {
+    return "authoritative NIP-29 MODE $mode requires ban_mask";
+  }
+
+  _set_mask_value($metadata, 'ban_masks', $args->{ban_mask}, $direction, \&_normalized_ban_masks);
+  return;
+}
+
+sub _apply_nip29_exception_mode {
+  my ($metadata, $args, $mode, $direction) = @_;
+
+  if (!_non_empty_scalar($args->{exception_mask})) {
+    return "authoritative NIP-29 MODE $mode requires exception_mask";
+  }
+
+  _set_mask_value($metadata, 'exception_masks', $args->{exception_mask}, $direction, \&_normalized_mask_list);
+  return;
+}
+
+sub _apply_nip29_invite_exception_mode {
+  my ($metadata, $args, $mode, $direction) = @_;
+
+  if (!_non_empty_scalar($args->{invite_exception_mask})) {
+    return "authoritative NIP-29 MODE $mode requires invite_exception_mask";
+  }
+
+  _set_mask_value($metadata, 'invite_exception_masks', $args->{invite_exception_mask},
+    $direction, \&_normalized_mask_list,);
+  return;
+}
+
+sub _apply_nip29_key_mode {
+  my ($metadata, $args, $mode, $direction) = @_;
+
+  if ($direction eq q{+}) {
+    if (!_non_empty_scalar($args->{channel_key})) {
+      return "authoritative NIP-29 MODE $mode requires channel_key";
+    }
+    $metadata->{channel_key} = $args->{channel_key};
+    return;
+  }
+
+  delete $metadata->{channel_key};
+  return;
+}
+
+sub _apply_nip29_limit_mode {
+  my ($metadata, $args, $mode, $direction) = @_;
+
+  if ($direction eq q{+}) {
+    if (!_positive_integer_string($args->{user_limit})) {
+      return "authoritative NIP-29 MODE $mode requires user_limit";
+    }
+    $metadata->{user_limit} = 0 + $args->{user_limit};
+    return;
+  }
+
+  delete $metadata->{user_limit};
+  return;
+}
+
+sub _apply_nip29_closed_mode {
+  my ($metadata, $args, $mode, $direction) = @_;
+  $metadata->{closed} = $direction eq q{+} ? 1 : 0;
+  return;
+}
+
+sub _apply_nip29_moderated_mode {
+  my ($metadata, $args, $mode, $direction) = @_;
+  $metadata->{moderated} = $direction eq q{+} ? 1 : 0;
+  return;
+}
+
+sub _apply_nip29_topic_restricted_mode {
+  my ($metadata, $args, $mode, $direction) = @_;
+  $metadata->{topic_restricted} = $direction eq q{+} ? 1 : 0;
+  return;
+}
+
+sub _set_mask_value {
+  my ($metadata, $field, $mask, $direction, $normalizer) = @_;
+  my %masks = map { $_ => 1 } @{$normalizer->($metadata->{$field})};
+
+  if ($direction eq q{+}) {
+    $masks{$mask} = 1;
+  } else {
+    delete $masks{$mask};
+  }
+
+  $metadata->{$field} = [sort keys %masks];
+  return;
+}
+
+sub _metadata_arg_hash {
+  my ($args) = @_;
+  my $group_metadata = $args->{group_metadata} || {};
+
+  if (ref($group_metadata) ne 'HASH') {
+    return (undef, 'group_metadata must be an object');
+  }
+
+  my %metadata = %{$group_metadata};
+  return (\%metadata, undef);
+}
+
+sub _metadata_edit_event_result {
+  my ($metadata, $context) = @_;
+
+  return {
+    valid => 1,
+    event => _build_group_metadata_edit_event_hash(
+      event_pubkey       => $context->{event_pubkey},
+      group_id           => $context->{group_id},
+      created_at         => $context->{created_at} + 0,
+      metadata           => $metadata,
+      actor_pubkey       => $context->{actor_pubkey},
+      signing_pubkey     => $context->{signing_pubkey},
+      authority_event_id => $context->{authority_event_id},
+      authority_sequence => $context->{authority_sequence},
+    ),
+  };
+}
+
+sub _nip29_event_result {
+  my ($event_hash, $context) = @_;
+  _apply_delegated_authority_tags_for_context($event_hash, $context);
+
+  return {
+    valid => 1,
+    event => $event_hash,
+  };
+}
+
+sub _apply_delegated_authority_tags_for_context {
+  my ($event_hash, $context) = @_;
+
+  _apply_delegated_authority_tags(
+    event_hash         => $event_hash,
+    actor_pubkey       => $context->{actor_pubkey},
+    signing_pubkey     => $context->{signing_pubkey},
+    authority_event_id => $context->{authority_event_id},
+    authority_sequence => $context->{authority_sequence},
+  );
+  return;
 }
 
 sub _resolve_nip29_group_binding {
@@ -1794,40 +2701,17 @@ sub _build_group_metadata_event_hash {
     pubkey     => $args{event_pubkey},
     group_id   => $args{group_id},
     created_at => $args{created_at} + 0,
-    (defined $metadata->{name} ? (name => $metadata->{name}) : ()),
-    (defined $metadata->{picture} ? (picture => $metadata->{picture}) : ()),
-    (defined $metadata->{about} ? (about => $metadata->{about}) : ()),
-    ($metadata->{private} ? (private => 1) : ()),
-    ($metadata->{closed} ? (closed => 1) : ()),
-    ($metadata->{restricted} ? (restricted => 1) : ()),
-    ($metadata->{hidden} ? (hidden => 1) : ()),
+    (defined $metadata->{name}    ? (name       => $metadata->{name})    : ()),
+    (defined $metadata->{picture} ? (picture    => $metadata->{picture}) : ()),
+    (defined $metadata->{about}   ? (about      => $metadata->{about})   : ()),
+    ($metadata->{private}         ? (private    => 1)                    : ()),
+    ($metadata->{closed}          ? (closed     => 1)                    : ()),
+    ($metadata->{restricted}      ? (restricted => 1)                    : ()),
+    ($metadata->{hidden}          ? (hidden     => 1)                    : ()),
   );
 
   my $event_hash = $event->to_hash;
-  push @{$event_hash->{tags}},
-    [ 'mode', 'moderated' ]
-    if $metadata->{moderated};
-  push @{$event_hash->{tags}},
-    [ 'mode', 'topic-restricted' ]
-    if $metadata->{topic_restricted};
-  push @{$event_hash->{tags}},
-    map { [ 'ban', $_ ] } @{_normalized_ban_masks($metadata->{ban_masks})};
-  push @{$event_hash->{tags}},
-    map { [ 'except', $_ ] } @{_normalized_mask_list($metadata->{exception_masks})};
-  push @{$event_hash->{tags}},
-    map { [ 'invite-except', $_ ] } @{_normalized_mask_list($metadata->{invite_exception_masks})};
-  push @{$event_hash->{tags}},
-    [ 'key', $metadata->{channel_key} ]
-    if defined($metadata->{channel_key}) && length($metadata->{channel_key});
-  push @{$event_hash->{tags}},
-    [ 'limit', 0 + $metadata->{user_limit} ]
-    if defined($metadata->{user_limit});
-  push @{$event_hash->{tags}},
-    [ 'topic', $metadata->{topic} ]
-    if exists $metadata->{topic};
-  push @{$event_hash->{tags}},
-    [ 'status', 'tombstoned' ]
-    if $metadata->{tombstoned};
+  _append_group_metadata_tags($event_hash, $metadata, 1);
 
   _apply_delegated_authority_tags(
     event_hash         => $event_hash,
@@ -1840,6 +2724,40 @@ sub _build_group_metadata_event_hash {
   return $event_hash;
 }
 
+sub _append_group_metadata_tags {
+  my ($event_hash, $metadata, $include_undefined_topic) = @_;
+
+  if ($metadata->{moderated}) {
+    push @{$event_hash->{tags}}, ['mode', 'moderated'];
+  }
+  if ($metadata->{topic_restricted}) {
+    push @{$event_hash->{tags}}, ['mode', 'topic-restricted'];
+  }
+  for my $ban_mask (@{_normalized_ban_masks($metadata->{ban_masks})}) {
+    push @{$event_hash->{tags}}, ['ban', $ban_mask];
+  }
+  for my $exception_mask (@{_normalized_mask_list($metadata->{exception_masks})}) {
+    push @{$event_hash->{tags}}, ['except', $exception_mask];
+  }
+  for my $invite_exception_mask (@{_normalized_mask_list($metadata->{invite_exception_masks})}) {
+    push @{$event_hash->{tags}}, ['invite-except', $invite_exception_mask];
+  }
+  if (defined($metadata->{channel_key}) && length($metadata->{channel_key})) {
+    push @{$event_hash->{tags}}, ['key', $metadata->{channel_key}];
+  }
+  if (defined $metadata->{user_limit}) {
+    push @{$event_hash->{tags}}, ['limit', 0 + $metadata->{user_limit}];
+  }
+  if (exists($metadata->{topic}) && ($include_undefined_topic || defined($metadata->{topic}))) {
+    push @{$event_hash->{tags}}, ['topic', $metadata->{topic}];
+  }
+  if ($metadata->{tombstoned}) {
+    push @{$event_hash->{tags}}, ['status', 'tombstoned'];
+  }
+
+  return;
+}
+
 sub _build_group_put_user_event_hash {
   my (%args) = @_;
 
@@ -1848,7 +2766,7 @@ sub _build_group_put_user_event_hash {
     group_id   => $args{group_id},
     target     => $args{target_pubkey},
     created_at => $args{created_at} + 0,
-    roles      => [ _sorted_roles(@{$args{roles} || []}) ],
+    roles      => [_sorted_roles(@{$args{roles} || []})],
   );
   my $event_hash = $event->to_hash;
   _apply_delegated_authority_tags(
@@ -1863,88 +2781,200 @@ sub _build_group_put_user_event_hash {
 }
 
 sub _metadata_from_group_event {
-  my ($event) = @_;
-  my %metadata = (
-    closed           => 0,
-    moderated        => 0,
-    topic_restricted => 0,
-    ban_masks        => [],
-    exception_masks  => [],
-    invite_exception_masks => [],
-    channel_key      => undef,
-    user_limit       => undef,
-    topic            => undef,
-    topic_actor_pubkey => undef,
-    tombstoned       => 0,
-  );
+  my ($event)  = @_;
+  my $metadata = _new_group_event_metadata();
+  my $parsed   = _parsed_group_metadata($event);
 
-  my $parsed = eval {
-    $event->kind == 39000
-      ? Net::Nostr::Group->metadata_from_event($event)
-      : {};
-  } || {};
-  $metadata{name} = $parsed->{name}
-    if defined $parsed->{name};
-  $metadata{picture} = $parsed->{picture}
-    if defined $parsed->{picture};
-  $metadata{about} = $parsed->{about}
-    if defined $parsed->{about};
-  $metadata{private} = $parsed->{private} ? 1 : 0
-    if exists $parsed->{private};
-  $metadata{restricted} = $parsed->{restricted} ? 1 : 0
-    if exists $parsed->{restricted};
-  $metadata{hidden} = $parsed->{hidden} ? 1 : 0
-    if exists $parsed->{hidden};
-  $metadata{closed} = $parsed->{closed} ? 1 : 0
-    if exists $parsed->{closed};
-
+  _apply_parsed_group_metadata($metadata, $parsed);
   for my $tag (@{$event->tags || []}) {
-    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 1;
-    if ($tag->[0] eq 'closed') {
-      $metadata{closed} = 1;
-      next;
-    }
-    if ($tag->[0] eq 'topic') {
-      $metadata{topic} = @{$tag} >= 2 ? $tag->[1] : '';
-      $metadata{topic_actor_pubkey} = _effective_actor_pubkey_from_group_event($event);
-      next;
-    }
-    if ($tag->[0] eq 'ban' && @{$tag} >= 2) {
-      push @{$metadata{ban_masks}}, $tag->[1];
-      next;
-    }
-    if ($tag->[0] eq 'except' && @{$tag} >= 2) {
-      push @{$metadata{exception_masks}}, $tag->[1];
-      next;
-    }
-    if ($tag->[0] eq 'invite-except' && @{$tag} >= 2) {
-      push @{$metadata{invite_exception_masks}}, $tag->[1];
-      next;
-    }
-    if ($tag->[0] eq 'key' && @{$tag} >= 2) {
-      $metadata{channel_key} = $tag->[1];
-      next;
-    }
-    if ($tag->[0] eq 'limit' && @{$tag} >= 2 && defined($tag->[1]) && $tag->[1] =~ /\A[1-9][0-9]*\z/mx) {
-      $metadata{user_limit} = 0 + $tag->[1];
-      next;
-    }
-    if ($tag->[0] eq 'status' && @{$tag} >= 2) {
-      $metadata{tombstoned} = 1
-        if $tag->[1] eq 'tombstoned';
-      next;
-    }
-    next unless $tag->[0] eq 'mode' && @{$tag} >= 2;
-    $metadata{moderated} = 1
-      if $tag->[1] eq 'moderated';
-    $metadata{topic_restricted} = 1
-      if $tag->[1] eq 'topic-restricted';
+    _apply_group_metadata_tag($metadata, $event, $tag);
   }
 
-  $metadata{ban_masks} = _normalized_ban_masks($metadata{ban_masks});
-  $metadata{exception_masks} = _normalized_mask_list($metadata{exception_masks});
-  $metadata{invite_exception_masks} = _normalized_mask_list($metadata{invite_exception_masks});
-  return \%metadata;
+  $metadata->{ban_masks}              = _normalized_ban_masks($metadata->{ban_masks});
+  $metadata->{exception_masks}        = _normalized_mask_list($metadata->{exception_masks});
+  $metadata->{invite_exception_masks} = _normalized_mask_list($metadata->{invite_exception_masks});
+  return $metadata;
+}
+
+sub _new_group_event_metadata {
+  return {
+    closed                 => 0,
+    moderated              => 0,
+    topic_restricted       => 0,
+    ban_masks              => [],
+    exception_masks        => [],
+    invite_exception_masks => [],
+    channel_key            => undef,
+    user_limit             => undef,
+    topic                  => undef,
+    topic_actor_pubkey     => undef,
+    tombstoned             => 0,
+  };
+}
+
+sub _parsed_group_metadata {
+  my ($event) = @_;
+  my $parsed = {};
+
+  if ($event->kind != 39_000) {
+    return $parsed;
+  }
+
+  my $parse_ok = eval {
+    $parsed = Net::Nostr::Group->metadata_from_event($event);
+    1;
+  };
+  if (!$parse_ok || ref($parsed) ne 'HASH') {
+    $parsed = {};
+  }
+
+  return $parsed;
+}
+
+sub _apply_parsed_group_metadata {
+  my ($metadata, $parsed) = @_;
+
+  for my $field (qw(name picture about)) {
+    if (defined $parsed->{$field}) {
+      $metadata->{$field} = $parsed->{$field};
+    }
+  }
+  for my $field (qw(private restricted hidden closed)) {
+    if (exists $parsed->{$field}) {
+      $metadata->{$field} = $parsed->{$field} ? 1 : 0;
+    }
+  }
+
+  return;
+}
+
+sub _apply_group_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+
+  if (ref($tag) ne 'ARRAY' || !@{$tag}) {
+    return;
+  }
+
+  my %handler_for = (
+    closed          => \&_apply_closed_metadata_tag,
+    topic           => \&_apply_topic_metadata_tag,
+    ban             => \&_apply_ban_metadata_tag,
+    except          => \&_apply_except_metadata_tag,
+    'invite-except' => \&_apply_invite_except_metadata_tag,
+    key             => \&_apply_key_metadata_tag,
+    limit           => \&_apply_limit_metadata_tag,
+    status          => \&_apply_status_metadata_tag,
+    mode            => \&_apply_mode_metadata_tag,
+  );
+  my $handler = $handler_for{$tag->[0]};
+  if (!defined $handler) {
+    return;
+  }
+
+  $handler->($metadata, $event, $tag);
+  return;
+}
+
+sub _apply_closed_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+  $metadata->{closed} = 1;
+  return;
+}
+
+sub _apply_topic_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+  $metadata->{topic}              = _tag_value_or_empty($tag);
+  $metadata->{topic_actor_pubkey} = _effective_actor_pubkey_from_group_event($event);
+  return;
+}
+
+sub _apply_ban_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+
+  if (_tag_has_value($tag)) {
+    push @{$metadata->{ban_masks}}, $tag->[1];
+  }
+  return;
+}
+
+sub _apply_except_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+
+  if (_tag_has_value($tag)) {
+    push @{$metadata->{exception_masks}}, $tag->[1];
+  }
+  return;
+}
+
+sub _apply_invite_except_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+
+  if (_tag_has_value($tag)) {
+    push @{$metadata->{invite_exception_masks}}, $tag->[1];
+  }
+  return;
+}
+
+sub _apply_key_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+
+  if (_tag_has_value($tag)) {
+    $metadata->{channel_key} = $tag->[1];
+  }
+  return;
+}
+
+sub _apply_limit_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+
+  if (_tag_has_value($tag) && _positive_integer_string($tag->[1])) {
+    $metadata->{user_limit} = 0 + $tag->[1];
+  }
+  return;
+}
+
+sub _apply_status_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+
+  if (_tag_has_value($tag) && $tag->[1] eq 'tombstoned') {
+    $metadata->{tombstoned} = 1;
+  }
+  return;
+}
+
+sub _apply_mode_metadata_tag {
+  my ($metadata, $event, $tag) = @_;
+
+  if (!_tag_has_value($tag)) {
+    return;
+  }
+  if ($tag->[1] eq 'moderated') {
+    $metadata->{moderated} = 1;
+  }
+  if ($tag->[1] eq 'topic-restricted') {
+    $metadata->{topic_restricted} = 1;
+  }
+  return;
+}
+
+sub _tag_has_value {
+  my ($tag) = @_;
+
+  if (ref($tag) eq 'ARRAY' && @{$tag} >= 2) {
+    return 1;
+  }
+
+  return 0;
+}
+
+sub _tag_value_or_empty {
+  my ($tag) = @_;
+
+  if (_tag_has_value($tag)) {
+    return $tag->[1];
+  }
+
+  return q{};
 }
 
 sub _build_group_metadata_edit_event_hash {
@@ -1955,40 +2985,17 @@ sub _build_group_metadata_edit_event_hash {
     pubkey     => $args{event_pubkey},
     group_id   => $args{group_id},
     created_at => $args{created_at} + 0,
-    (defined $metadata->{name} ? (name => $metadata->{name}) : ()),
-    (defined $metadata->{picture} ? (picture => $metadata->{picture}) : ()),
-    (defined $metadata->{about} ? (about => $metadata->{about}) : ()),
-    ($metadata->{private} ? (private => 1) : ()),
-    ($metadata->{closed} ? (closed => 1) : ()),
-    ($metadata->{restricted} ? (restricted => 1) : ()),
-    ($metadata->{hidden} ? (hidden => 1) : ()),
+    (defined $metadata->{name}    ? (name       => $metadata->{name})    : ()),
+    (defined $metadata->{picture} ? (picture    => $metadata->{picture}) : ()),
+    (defined $metadata->{about}   ? (about      => $metadata->{about})   : ()),
+    ($metadata->{private}         ? (private    => 1)                    : ()),
+    ($metadata->{closed}          ? (closed     => 1)                    : ()),
+    ($metadata->{restricted}      ? (restricted => 1)                    : ()),
+    ($metadata->{hidden}          ? (hidden     => 1)                    : ()),
   );
 
   my $event_hash = $event->to_hash;
-  push @{$event_hash->{tags}},
-    [ 'mode', 'moderated' ]
-    if $metadata->{moderated};
-  push @{$event_hash->{tags}},
-    [ 'mode', 'topic-restricted' ]
-    if $metadata->{topic_restricted};
-  push @{$event_hash->{tags}},
-    map { [ 'ban', $_ ] } @{_normalized_ban_masks($metadata->{ban_masks})};
-  push @{$event_hash->{tags}},
-    map { [ 'except', $_ ] } @{_normalized_mask_list($metadata->{exception_masks})};
-  push @{$event_hash->{tags}},
-    map { [ 'invite-except', $_ ] } @{_normalized_mask_list($metadata->{invite_exception_masks})};
-  push @{$event_hash->{tags}},
-    [ 'key', $metadata->{channel_key} ]
-    if defined($metadata->{channel_key}) && length($metadata->{channel_key});
-  push @{$event_hash->{tags}},
-    [ 'limit', 0 + $metadata->{user_limit} ]
-    if defined($metadata->{user_limit});
-  push @{$event_hash->{tags}},
-    [ 'topic', $metadata->{topic} ]
-    if exists($metadata->{topic}) && defined($metadata->{topic});
-  push @{$event_hash->{tags}},
-    [ 'status', 'tombstoned' ]
-    if $metadata->{tombstoned};
+  _append_group_metadata_tags($event_hash, $metadata, 0);
   _apply_delegated_authority_tags(
     event_hash         => $event_hash,
     actor_pubkey       => $args{actor_pubkey},
@@ -2004,9 +3011,15 @@ sub _target_and_roles_from_group_member_event {
   my ($event) = @_;
 
   for my $tag (@{$event->tags || []}) {
-    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
-    next unless $tag->[0] eq 'p';
-    return ($tag->[1], @{$tag}[2 .. $#$tag]);
+    if (!_tag_has_value($tag)) {
+      next;
+    }
+    if ($tag->[0] ne 'p') {
+      next;
+    }
+    my $last_index = scalar(@{$tag}) - 1;
+    my @roles      = @{$tag}[2 .. $last_index];
+    return ($tag->[1], @roles);
   }
 
   return;
@@ -2018,11 +3031,15 @@ sub _invite_code_and_target_from_group_invite_event {
   my $target_pubkey;
 
   for my $tag (@{$event->tags || []}) {
-    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
-    $invite_code = $tag->[1]
-      if !defined($invite_code) && $tag->[0] eq 'code';
-    $target_pubkey = $tag->[1]
-      if !defined($target_pubkey) && $tag->[0] eq 'p';
+    if (!_tag_has_value($tag)) {
+      next;
+    }
+    if (!defined($invite_code) && $tag->[0] eq 'code') {
+      $invite_code = $tag->[1];
+    }
+    if (!defined($target_pubkey) && $tag->[0] eq 'p') {
+      $target_pubkey = $tag->[1];
+    }
   }
 
   return ($invite_code, $target_pubkey);
@@ -2032,9 +3049,12 @@ sub _invite_code_from_group_join_request_event {
   my ($event) = @_;
 
   for my $tag (@{$event->tags || []}) {
-    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
-    return $tag->[1]
-      if $tag->[0] eq 'code';
+    if (!_tag_has_value($tag)) {
+      next;
+    }
+    if ($tag->[0] eq 'code') {
+      return $tag->[1];
+    }
   }
 
   return;
@@ -2042,13 +3062,21 @@ sub _invite_code_from_group_join_request_event {
 
 sub _pending_invite_for_pubkey {
   my ($pending_invites, $pubkey) = @_;
-  return unless ref($pending_invites) eq 'HASH';
-  return unless defined $pubkey && !ref($pubkey) && length($pubkey);
+  if (ref($pending_invites) ne 'HASH') {
+    return;
+  }
+  if (!_non_empty_scalar($pubkey)) {
+    return;
+  }
 
   for my $code (sort keys %{$pending_invites}) {
     my $invite = $pending_invites->{$code};
-    next unless ref($invite) eq 'HASH';
-    next if defined $invite->{target_pubkey} && $invite->{target_pubkey} ne $pubkey;
+    if (ref($invite) ne 'HASH') {
+      next;
+    }
+    if (defined($invite->{target_pubkey}) && $invite->{target_pubkey} ne $pubkey) {
+      next;
+    }
     return $invite;
   }
 
@@ -2059,10 +3087,15 @@ sub _effective_actor_pubkey_from_group_event {
   my ($event) = @_;
 
   for my $tag (@{$event->tags || []}) {
-    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
-    next unless $tag->[0] eq 'overnet_actor';
-    return $tag->[1]
-      if defined $tag->[1] && $tag->[1] =~ /\A[0-9a-f]{64}\z/mx;
+    if (!_tag_has_value($tag)) {
+      next;
+    }
+    if ($tag->[0] ne 'overnet_actor') {
+      next;
+    }
+    if (_valid_hex_pubkey($tag->[1])) {
+      return $tag->[1];
+    }
   }
 
   return $event->pubkey;
@@ -2072,10 +3105,15 @@ sub _irc_mask_from_group_event {
   my ($event) = @_;
 
   for my $tag (@{$event->tags || []}) {
-    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
-    next unless $tag->[0] eq 'overnet_irc_mask';
-    return $tag->[1]
-      if defined($tag->[1]) && !ref($tag->[1]) && length($tag->[1]);
+    if (!_tag_has_value($tag)) {
+      next;
+    }
+    if ($tag->[0] ne 'overnet_irc_mask') {
+      next;
+    }
+    if (_non_empty_scalar($tag->[1])) {
+      return $tag->[1];
+    }
   }
 
   return;
@@ -2086,30 +3124,32 @@ sub _sorted_authoritative_group_events {
   my @decorated;
 
   for my $raw_event (@raw_events) {
-    die "authoritative events must be objects\n"
-      unless ref($raw_event) eq 'HASH';
+    if (ref($raw_event) ne 'HASH') {
+      croak "authoritative events must be objects\n";
+    }
 
     my $event = eval { Net::Nostr::Event->new(%{$raw_event}) };
-    die "authoritative events must be valid Nostr events\n"
-      unless $event;
+    if (!$event) {
+      croak "authoritative events must be valid Nostr events\n";
+    }
 
     my ($authority, $sequence) = _authority_ordering_from_event($event);
-    push @decorated, [
+    push @decorated,
+      [
       $event->created_at + 0,
       _authoritative_semantic_phase_for_event($event),
-      $authority,
-      $sequence,
-      lc($event->id || ''),
-      $event,
-    ];
+      $authority, $sequence, lc($event->id || q{}), $event,
+      ];
   }
 
   return map { $_->[5] } sort {
     $a->[0] <=> $b->[0]
       || (
-        length($a->[2]) && length($b->[2]) && $a->[2] eq $b->[2] && $a->[3] > 0 && $b->[3] > 0
-          ? ($a->[3] <=> $b->[3])
-          : 0
+         length($a->[2])
+      && length($b->[2])
+      && $a->[2] eq $b->[2] && $a->[3] > 0 && $b->[3] > 0
+      ? ($a->[3] <=> $b->[3])
+      : 0
       )
       || $a->[1] <=> $b->[1]
       || $a->[4] cmp $b->[4]
@@ -2120,26 +3160,37 @@ sub _authoritative_semantic_phase_for_event {
   my ($event) = @_;
   my $kind = $event->kind;
 
-  return 0 if $kind == 9000 || $kind == 9002 || $kind == 9009;
-  return 1 if $kind == 9021;
-  return 2 if $kind == 9001 || $kind == 9022;
-  return 3 if $kind == 39000 || $kind == 39001 || $kind == 39002 || $kind == 39003;
+  if ($kind == 9_000 || $kind == 9_002 || $kind == 9_009) {
+    return 0;
+  }
+  if ($kind == 9_021) {
+    return 1;
+  }
+  if ($kind == 9_001 || $kind == 9_022) {
+    return 2;
+  }
+  if ($kind == 39_000 || $kind == 39_001 || $kind == 39_002 || $kind == 39_003) {
+    return 3;
+  }
   return 4;
 }
 
 sub _authority_ordering_from_event {
-  my ($event) = @_;
-  my $authority = '';
-  my $sequence = 0;
+  my ($event)   = @_;
+  my $authority = q{};
+  my $sequence  = 0;
 
   for my $tag (@{$event->tags || []}) {
-    next unless ref($tag) eq 'ARRAY' && @{$tag} >= 2;
-    if (($tag->[0] || '') eq 'overnet_authority' && !length($authority)) {
-      $authority = defined($tag->[1]) && !ref($tag->[1]) ? $tag->[1] : '';
+    if (!_tag_has_value($tag)) {
       next;
     }
-    if (($tag->[0] || '') eq 'overnet_sequence' && !$sequence) {
-      $sequence = (defined($tag->[1]) && !ref($tag->[1]) && $tag->[1] =~ /\A\d+\z/mx)
+    if (($tag->[0] || q{}) eq 'overnet_authority' && !length($authority)) {
+      $authority = defined($tag->[1]) && !ref($tag->[1]) ? $tag->[1] : q{};
+      next;
+    }
+    if (($tag->[0] || q{}) eq 'overnet_sequence' && !$sequence) {
+      $sequence =
+        (defined($tag->[1]) && !ref($tag->[1]) && $tag->[1] =~ /\A\d+\z/msx)
         ? 0 + $tag->[1]
         : 0;
     }
@@ -2149,51 +3200,84 @@ sub _authority_ordering_from_event {
 }
 
 sub _apply_delegated_authority_tags {
-  my (%args) = @_;
-  my $event_hash = $args{event_hash};
+  my (%args)         = @_;
+  my $event_hash     = $args{event_hash};
   my $signing_pubkey = $args{signing_pubkey};
-  return unless defined $signing_pubkey;
+  if (!defined $signing_pubkey) {
+    return;
+  }
 
   push @{$event_hash->{tags}},
-    [ 'overnet_actor', $args{actor_pubkey} ],
-    [ 'overnet_authority', $args{authority_event_id} ],
-    [ 'overnet_sequence', 0 + $args{authority_sequence} ];
+    ['overnet_actor',     $args{actor_pubkey}],
+    ['overnet_authority', $args{authority_event_id}],
+    ['overnet_sequence',  0 + $args{authority_sequence}];
   return;
 }
 
 sub _sorted_roles {
   my @roles = @_;
   my %seen;
-  @roles = grep { defined $_ && length $_ && !$seen{$_}++ } @roles;
-  my @sorted_roles = sort {
-    ($a eq 'irc.operator' ? 0 : $a eq 'irc.voice' ? 1 : 2)
-      <=>
-    ($b eq 'irc.operator' ? 0 : $b eq 'irc.voice' ? 1 : 2)
-      ||
-    $a cmp $b
-  } @roles;
+  my @unique_roles;
+  for my $role (@roles) {
+    if (!_non_empty_scalar($role)) {
+      next;
+    }
+    if ($seen{$role}) {
+      next;
+    }
+    $seen{$role} = 1;
+    push @unique_roles, $role;
+  }
+  my @sorted_roles = sort { _role_sort_rank($a) <=> _role_sort_rank($b) || $a cmp $b } @unique_roles;
   return @sorted_roles;
+}
+
+sub _role_sort_rank {
+  my ($role) = @_;
+
+  if ($role eq 'irc.operator') {
+    return 0;
+  }
+  if ($role eq 'irc.voice') {
+    return 1;
+  }
+
+  return 2;
 }
 
 sub _presentational_prefix_for_roles {
   my ($roles) = @_;
   $roles ||= [];
   my %roles = map { $_ => 1 } @{$roles};
-  return '@' if $roles{'irc.operator'};
-  return '+' if $roles{'irc.voice'};
-  return '';
+  if ($roles{'irc.operator'}) {
+    return q{@};
+  }
+  if ($roles{'irc.voice'}) {
+    return q{+};
+  }
+  return q{};
 }
 
 sub _normalized_mask_list {
   my ($masks) = @_;
-  return [] unless ref($masks) eq 'ARRAY';
+  if (ref($masks) ne 'ARRAY') {
+    return [];
+  }
 
   my %seen;
-  return [
-    sort grep {
-      defined($_) && !ref($_) && length($_) && !$seen{$_}++
-    } @{$masks}
-  ];
+  my @normalized_masks;
+  for my $mask (@{$masks}) {
+    if (!_non_empty_scalar($mask)) {
+      next;
+    }
+    if ($seen{$mask}) {
+      next;
+    }
+    $seen{$mask} = 1;
+    push @normalized_masks, $mask;
+  }
+
+  return [sort @normalized_masks];
 }
 
 sub _normalized_ban_masks {
@@ -2203,13 +3287,19 @@ sub _normalized_ban_masks {
 
 sub _actor_mask_matches_masks {
   my ($masks, $actor_mask) = @_;
-  return 0 unless defined $actor_mask && !ref($actor_mask) && length($actor_mask);
+  if (!_non_empty_scalar($actor_mask)) {
+    return 0;
+  }
 
   for my $mask (@{_normalized_mask_list($masks)}) {
-    return 1 if Overnet::Authority::HostedChannel::irc_mask_matches(
-      mask  => $mask,
-      value => $actor_mask,
-    );
+    if (
+      Overnet::Authority::HostedChannel::irc_mask_matches(
+        mask  => $mask,
+        value => $actor_mask,
+      )
+    ) {
+      return 1;
+    }
   }
 
   return 0;
@@ -2250,11 +3340,27 @@ This module is the starting point for an Overnet IRC adapter implementation.
 Adapter behavior is defined by the Overnet core specification and the IRC adapter
 specification.
 
-=head1 METHODS
+=head1 VERSION
+
+Version 0.001.
+
+=head1 SUBROUTINES/METHODS
 
 =head2 new
 
 Creates a new adapter instance.
+
+=head2 supported_secret_slots
+
+Returns the supported IRC secret slot names.
+
+=head2 open_session
+
+Opens an adapter session and records the provided secret slots.
+
+=head2 close_session
+
+Closes an adapter session.
 
 =head2 map_message
 
@@ -2268,5 +3374,80 @@ C<MODE>.
 =head2 map_input
 
 Maps a supported IRC input into an unsigned Overnet event draft.
+
+=head2 derive
+
+Dispatches a derived adapter operation.
+
+=head2 derive_channel_presence
+
+Derives an adapted channel presence event from observed IRC membership events.
+
+=head2 derive_authoritative_channel_state
+
+Derives the authoritative channel state view.
+
+=head2 derive_authoritative_ban_list_view
+
+Derives the authoritative ban list view.
+
+=head2 derive_authoritative_list_entry_view
+
+Derives the authoritative channel list entry view.
+
+=head2 derive_authoritative_join_admission
+
+Derives authoritative join admission for a prospective actor.
+
+=head2 derive_authoritative_speak_permission
+
+Derives authoritative speak permission for an actor.
+
+=head2 derive_authoritative_topic_permission
+
+Derives authoritative topic-edit permission for an actor.
+
+=head2 derive_authoritative_mode_write_permission
+
+Derives authoritative mode-write permission for an actor.
+
+=head2 derive_authoritative_channel_action_permission
+
+Derives authoritative channel action permission for an actor.
+
+=head2 derive_authoritative_channel_view
+
+Derives an authoritative NIP-29 channel view.
+
+=head1 DIAGNOSTICS
+
+Methods return structured invalid results for rejected adapter inputs. Session
+management methods croak for invalid API usage.
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+NIP-29 authoritative channel behavior is enabled through the supplied session
+configuration.
+
+=head1 DEPENDENCIES
+
+This module depends on JSON, Net::Nostr, and Overnet authority helpers.
+
+=head1 INCOMPATIBILITIES
+
+No known incompatibilities.
+
+=head1 BUGS AND LIMITATIONS
+
+Events produced by this adapter are unsigned drafts unless delegated authority
+metadata is supplied.
+
+=head1 AUTHOR
+
+Overnet project contributors.
+
+=head1 LICENSE AND COPYRIGHT
+
+Copyright the Overnet project contributors.
 
 =cut

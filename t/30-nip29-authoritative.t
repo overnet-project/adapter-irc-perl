@@ -40,15 +40,12 @@ subtest 'authoritative KICK maps to a NIP-29 remove-user event draft' => sub {
   );
 
   ok $result->{valid}, 'authoritative KICK is accepted';
-  is $result->{event}{kind}, 9001, 'authoritative KICK emits kind 9001';
-  is $result->{event}{pubkey}, 'a' x 64, 'authoritative KICK uses the actor pubkey';
+  is $result->{event}{kind},    9001,             'authoritative KICK emits kind 9001';
+  is $result->{event}{pubkey},  'a' x 64,         'authoritative KICK uses the actor pubkey';
   is $result->{event}{content}, 'rule violation', 'authoritative KICK carries the reason in content';
   is_deeply(
     $result->{event}{tags},
-    [
-      [ 'h', 'overnet' ],
-      [ 'p', 'b' x 64 ],
-    ],
+    [['h', 'overnet'], ['p', 'b' x 64],],
     'authoritative KICK targets the bound NIP-29 group member',
   );
   like $result->{event}{id}, qr/\A[0-9a-f]{64}\z/mx, 'authoritative KICK has a deterministic unsigned event id';
@@ -74,10 +71,7 @@ subtest 'authoritative MODE +o maps to a NIP-29 put-user event draft' => sub {
   is $result->{event}{kind}, 9000, 'authoritative MODE +o emits kind 9000';
   is_deeply(
     $result->{event}{tags},
-    [
-      [ 'h', 'overnet' ],
-      [ 'p', 'b' x 64, 'irc.operator', 'irc.voice' ],
-    ],
+    [['h', 'overnet'], ['p', 'b' x 64, 'irc.operator', 'irc.voice'],],
     'authoritative MODE +o updates roles through the NIP-29 member tag',
   );
   is $result->{event}{content}, '', 'authoritative MODE +o uses empty content when no reason is supplied';
@@ -102,11 +96,7 @@ subtest 'authoritative MODE +m maps to a NIP-29 metadata edit with IRC profile m
   is $result->{event}{kind}, 9002, 'authoritative MODE +m emits kind 9002';
   is_deeply(
     $result->{event}{tags},
-    [
-      [ 'h', 'overnet' ],
-      ['closed'],
-      [ 'mode', 'moderated' ],
-    ],
+    [['h', 'overnet'], ['closed'], ['mode', 'moderated'],],
     'authoritative MODE +m preserves existing metadata flags and adds the moderated mode tag',
   );
 };
@@ -132,12 +122,7 @@ subtest 'authoritative MODE +b and -b map to NIP-29 metadata edits carrying the 
   is $add_result->{event}{kind}, 9002, 'authoritative MODE +b emits kind 9002';
   is_deeply(
     $add_result->{event}{tags},
-    [
-      [ 'h', 'overnet' ],
-      ['closed'],
-      [ 'ban', '*!*@evil.example' ],
-      [ 'ban', 'bob!bob@127.0.0.1' ],
-    ],
+    [['h', 'overnet'], ['closed'], ['ban', '*!*@evil.example'], ['ban', 'bob!bob@127.0.0.1'],],
     'authoritative MODE +b preserves existing bans and appends the new IRC ban mask',
   );
 
@@ -152,7 +137,7 @@ subtest 'authoritative MODE +b and -b map to NIP-29 metadata edits carrying the 
     ban_mask       => 'bob!bob@127.0.0.1',
     group_metadata => {
       closed    => 1,
-      ban_masks => [ 'bob!bob@127.0.0.1', '*!*@evil.example' ],
+      ban_masks => ['bob!bob@127.0.0.1', '*!*@evil.example'],
     },
     created_at => 1_744_301_003,
   );
@@ -161,11 +146,7 @@ subtest 'authoritative MODE +b and -b map to NIP-29 metadata edits carrying the 
   is $remove_result->{event}{kind}, 9002, 'authoritative MODE -b emits kind 9002';
   is_deeply(
     $remove_result->{event}{tags},
-    [
-      [ 'h', 'overnet' ],
-      ['closed'],
-      [ 'ban', '*!*@evil.example' ],
-    ],
+    [['h', 'overnet'], ['closed'], ['ban', '*!*@evil.example'],],
     'authoritative MODE -b removes only the targeted IRC ban mask',
   );
 };
@@ -192,11 +173,11 @@ subtest 'authoritative TOPIC maps to a NIP-29 metadata edit with the IRC topic t
   is_deeply(
     $result->{event}{tags},
     [
-      [ 'h', 'overnet' ],
+      ['h', 'overnet'],
       ['closed'],
-      [ 'mode', 'moderated' ],
-      [ 'mode', 'topic-restricted' ],
-      [ 'topic', 'Authoritative topic' ],
+      ['mode',  'moderated'],
+      ['mode',  'topic-restricted'],
+      ['topic', 'Authoritative topic'],
     ],
     'authoritative TOPIC preserves existing metadata flags and carries the IRC topic tag',
   );
@@ -225,13 +206,13 @@ subtest 'authoritative DELETE maps to a NIP-29 metadata edit with the tombstone 
   is_deeply(
     $result->{event}{tags},
     [
-      [ 'h', 'overnet' ],
+      ['h', 'overnet'],
       ['closed'],
-      [ 'mode', 'moderated' ],
-      [ 'mode', 'topic-restricted' ],
-      [ 'ban', '*!*@evil.example' ],
-      [ 'topic', 'Authoritative topic' ],
-      [ 'status', 'tombstoned' ],
+      ['mode',   'moderated'],
+      ['mode',   'topic-restricted'],
+      ['ban',    '*!*@evil.example'],
+      ['topic',  'Authoritative topic'],
+      ['status', 'tombstoned'],
     ],
     'authoritative DELETE preserves existing metadata and appends the tombstone status tag',
   );
@@ -261,12 +242,12 @@ subtest 'authoritative UNDELETE maps to a NIP-29 metadata edit that removes the 
   is_deeply(
     $result->{event}{tags},
     [
-      [ 'h', 'overnet' ],
+      ['h', 'overnet'],
       ['closed'],
-      [ 'mode', 'moderated' ],
-      [ 'mode', 'topic-restricted' ],
-      [ 'ban', '*!*@evil.example' ],
-      [ 'topic', 'Authoritative topic' ],
+      ['mode',  'moderated'],
+      ['mode',  'topic-restricted'],
+      ['ban',   '*!*@evil.example'],
+      ['topic', 'Authoritative topic'],
     ],
     'authoritative UNDELETE preserves retained metadata and omits the tombstone status tag',
   );
@@ -290,11 +271,7 @@ subtest 'authoritative INVITE maps to a NIP-29 create-invite event draft' => sub
   is $result->{event}{kind}, 9009, 'authoritative INVITE emits kind 9009';
   is_deeply(
     $result->{event}{tags},
-    [
-      [ 'h', 'overnet' ],
-      [ 'code', 'invite-bob' ],
-      [ 'p', 'b' x 64 ],
-    ],
+    [['h', 'overnet'], ['code', 'invite-bob'], ['p', 'b' x 64],],
     'authoritative INVITE targets the bound NIP-29 group with an invite code and invitee pubkey',
   );
   is $result->{event}{content}, '', 'authoritative INVITE uses empty content by default';
@@ -322,74 +299,70 @@ subtest 'authoritative JOIN can bootstrap a newly created hosted channel without
     created_at => 1_744_301_003,
   );
 
-  ok $result->{valid}, 'authoritative bootstrap JOIN is accepted';
+  ok $result->{valid},                  'authoritative bootstrap JOIN is accepted';
   ok ref($result->{events}) eq 'ARRAY', 'authoritative bootstrap JOIN emits multiple event drafts';
-  is scalar(@{$result->{events}}), 3, 'authoritative bootstrap JOIN emits metadata, operator bootstrap, and join drafts';
+  is scalar(@{$result->{events}}), 3,
+    'authoritative bootstrap JOIN emits metadata, operator bootstrap, and join drafts';
   is_deeply(
-    [ map { $_->{kind} } @{$result->{events}} ],
-    [ 39000, 9000, 9021 ],
+    [map { $_->{kind} } @{$result->{events}}],
+    [39000, 9000, 9021],
     'authoritative bootstrap JOIN emits the expected NIP-29 event kinds',
   );
   is_deeply(
     $result->{events}[0]{tags},
     [
-      [ 'd', $group_id ],
-      [ 'name', '#Fresh' ],
-      [ 'overnet_actor', 'a' x 64 ],
-      [ 'overnet_authority', 'e' x 64 ],
-      [ 'overnet_sequence', 11 ],
+      ['d',                 $group_id],
+      ['name',              '#Fresh'],
+      ['overnet_actor',     'a' x 64],
+      ['overnet_authority', 'e' x 64],
+      ['overnet_sequence',  11],
     ],
     'authoritative bootstrap metadata uses the deterministic binding and delegated authority tags',
   );
   is_deeply(
     $result->{events}[1]{tags},
     [
-      [ 'h', $group_id ],
-      [ 'p', 'a' x 64, 'irc.operator' ],
-      [ 'overnet_actor', 'a' x 64 ],
-      [ 'overnet_authority', 'e' x 64 ],
-      [ 'overnet_sequence', 11 ],
+      ['h',                 $group_id],
+      ['p',                 'a' x 64, 'irc.operator'],
+      ['overnet_actor',     'a' x 64],
+      ['overnet_authority', 'e' x 64],
+      ['overnet_sequence',  11],
     ],
     'authoritative bootstrap role event seeds the creator as irc.operator',
   );
   is_deeply(
     $result->{events}[2]{tags},
-    [
-      [ 'h', $group_id ],
-      [ 'overnet_actor', 'a' x 64 ],
-      [ 'overnet_authority', 'e' x 64 ],
-      [ 'overnet_sequence', 11 ],
-    ],
+    [['h', $group_id], ['overnet_actor', 'a' x 64], ['overnet_authority', 'e' x 64], ['overnet_sequence', 11],],
     'authoritative bootstrap join uses the deterministic binding and delegated actor tags',
   );
 };
 
 subtest 'authoritative JOIN can target a delegated signer while preserving the effective actor' => sub {
   my $result = $adapter->map_input(
-    session_config      => _authority_config(),
-    command             => 'JOIN',
-    network             => 'irc.example.test',
-    target              => '#overnet',
-    nick                => 'bob',
-    actor_pubkey        => 'b' x 64,
-    signing_pubkey      => 'd' x 64,
-    authority_event_id  => 'e' x 64,
-    authority_sequence  => 7,
-    invite_code         => 'invite-bob',
-    created_at          => 1_744_301_004,
+    session_config     => _authority_config(),
+    command            => 'JOIN',
+    network            => 'irc.example.test',
+    target             => '#overnet',
+    nick               => 'bob',
+    actor_pubkey       => 'b' x 64,
+    signing_pubkey     => 'd' x 64,
+    authority_event_id => 'e' x 64,
+    authority_sequence => 7,
+    invite_code        => 'invite-bob',
+    created_at         => 1_744_301_004,
   );
 
   ok $result->{valid}, 'delegated authoritative JOIN is accepted';
-  is $result->{event}{kind}, 9021, 'delegated authoritative JOIN emits kind 9021';
+  is $result->{event}{kind},   9021,     'delegated authoritative JOIN emits kind 9021';
   is $result->{event}{pubkey}, 'd' x 64, 'delegated authoritative JOIN uses the delegated signer pubkey';
   is_deeply(
     $result->{event}{tags},
     [
-      [ 'h', 'overnet' ],
-      [ 'code', 'invite-bob' ],
-      [ 'overnet_actor', 'b' x 64 ],
-      [ 'overnet_authority', 'e' x 64 ],
-      [ 'overnet_sequence', 7 ],
+      ['h',                 'overnet'],
+      ['code',              'invite-bob'],
+      ['overnet_actor',     'b' x 64],
+      ['overnet_authority', 'e' x 64],
+      ['overnet_sequence',  7],
     ],
     'delegated authoritative JOIN preserves the effective actor, authority grant reference, and session sequence',
   );
@@ -408,14 +381,12 @@ subtest 'authoritative PART maps to a NIP-29 leave-request event draft' => sub {
   );
 
   ok $result->{valid}, 'authoritative PART is accepted';
-  is $result->{event}{kind}, 9022, 'authoritative PART emits kind 9022';
-  is $result->{event}{pubkey}, 'b' x 64, 'authoritative PART uses the actor pubkey';
-  is $result->{event}{content}, 'later', 'authoritative PART carries the part reason in content';
+  is $result->{event}{kind},    9022,     'authoritative PART emits kind 9022';
+  is $result->{event}{pubkey},  'b' x 64, 'authoritative PART uses the actor pubkey';
+  is $result->{event}{content}, 'later',  'authoritative PART carries the part reason in content';
   is_deeply(
     $result->{event}{tags},
-    [
-      [ 'h', 'overnet' ],
-    ],
+    [['h', 'overnet'],],
     'authoritative PART targets the bound NIP-29 group without a member p tag',
   );
 };
@@ -427,7 +398,7 @@ subtest 'derive authoritative channel state reconstructs IRC-facing state from N
     created_at => 1_744_301_010,
     closed     => 1,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'mode', 'moderated' ];
+  push @{$metadata->{tags}}, ['mode', 'moderated'];
 
   my $admins = Net::Nostr::Group->admins(
     pubkey     => 'f' x 64,
@@ -445,34 +416,23 @@ subtest 'derive authoritative channel state reconstructs IRC-facing state from N
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_012,
-    members    => [
-      'a' x 64,
-      'b' x 64,
-    ],
+    members    => ['a' x 64, 'b' x 64,],
   )->to_hash;
 
   my $roles = Net::Nostr::Group->roles(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_013,
-    roles      => [
-      { name => 'irc.operator' },
-      { name => 'irc.voice' },
-    ],
+    roles      => [{name => 'irc.operator'}, {name => 'irc.voice'},],
   )->to_hash;
 
   my $result = $adapter->derive(
     operation      => 'authoritative_channel_state',
     session_config => _authority_config(),
     input          => {
-      network      => 'irc.example.test',
-      target       => '#overnet',
-      authoritative_events => [
-        $metadata,
-        $admins,
-        $members,
-        $roles,
-      ],
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata, $admins, $members, $roles,],
     },
   );
 
@@ -488,16 +448,16 @@ subtest 'derive authoritative channel state reconstructs IRC-facing state from N
       group_id          => 'overnet',
       group_ref         => "groups.example.test'overnet",
       channel_modes     => '+imn',
-      supported_roles   => [ 'irc.operator', 'irc.voice' ],
+      supported_roles   => ['irc.operator', 'irc.voice'],
       members           => [
         {
-          pubkey               => 'a' x 64,
-          roles                => ['irc.operator'],
+          pubkey                => 'a' x 64,
+          roles                 => ['irc.operator'],
           presentational_prefix => '@',
         },
         {
-          pubkey               => 'b' x 64,
-          roles                => [],
+          pubkey                => 'b' x 64,
+          roles                 => [],
           presentational_prefix => '',
         },
       ],
@@ -506,7 +466,8 @@ subtest 'derive authoritative channel state reconstructs IRC-facing state from N
   );
 };
 
-subtest 'derive authoritative channel state accepts a matching invite code plus join request as local membership' => sub {
+subtest 'derive authoritative channel state accepts a matching invite code plus join request as local membership' =>
+  sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
@@ -530,19 +491,14 @@ subtest 'derive authoritative channel state accepts a matching invite code plus 
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_022,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $roles = Net::Nostr::Group->roles(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_023,
-    roles      => [
-      { name => 'irc.operator' },
-      { name => 'irc.voice' },
-    ],
+    roles      => [{name => 'irc.operator'}, {name => 'irc.voice'},],
   )->to_hash;
 
   my $invite = Net::Nostr::Group->create_invite(
@@ -551,7 +507,7 @@ subtest 'derive authoritative channel state accepts a matching invite code plus 
     code       => 'invite-bob',
     created_at => 1_744_301_024,
   )->to_hash;
-  push @{$invite->{tags}}, [ 'p', 'b' x 64 ];
+  push @{$invite->{tags}}, ['p', 'b' x 64];
 
   my $join = Net::Nostr::Group->join_request(
     pubkey     => 'b' x 64,
@@ -566,14 +522,7 @@ subtest 'derive authoritative channel state accepts a matching invite code plus 
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $metadata,
-        $admins,
-        $members,
-        $roles,
-        $invite,
-        $join,
-      ],
+      authoritative_events => [$metadata, $admins, $members, $roles, $invite, $join,],
     },
   );
 
@@ -595,7 +544,7 @@ subtest 'derive authoritative channel state accepts a matching invite code plus 
     ],
     'matching invite plus join request produces derived local membership for the invited pubkey',
   );
-};
+  };
 
 subtest 'derive authoritative channel state does not treat 39002 membership snapshots as exhaustive by default' => sub {
   my $metadata = Net::Nostr::Group->metadata(
@@ -609,19 +558,14 @@ subtest 'derive authoritative channel state does not treat 39002 membership snap
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_021,
-    members    => [
-      'a' x 64,
-      'b' x 64,
-    ],
+    members    => ['a' x 64, 'b' x 64,],
   )->to_hash;
 
   my $partial_members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_022,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $result = $adapter->derive(
@@ -630,11 +574,7 @@ subtest 'derive authoritative channel state does not treat 39002 membership snap
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $metadata,
-        $initial_members,
-        $partial_members,
-      ],
+      authoritative_events => [$metadata, $initial_members, $partial_members,],
     },
   );
 
@@ -681,9 +621,7 @@ subtest 'derive authoritative channel state removes local membership after a lea
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_028,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $invite = Net::Nostr::Group->create_invite(
@@ -692,7 +630,7 @@ subtest 'derive authoritative channel state removes local membership after a lea
     code       => 'invite-bob',
     created_at => 1_744_301_029,
   )->to_hash;
-  push @{$invite->{tags}}, [ 'p', 'b' x 64 ];
+  push @{$invite->{tags}}, ['p', 'b' x 64];
 
   my $join = Net::Nostr::Group->join_request(
     pubkey     => 'b' x 64,
@@ -714,14 +652,7 @@ subtest 'derive authoritative channel state removes local membership after a lea
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $metadata,
-        $admins,
-        $members,
-        $invite,
-        $join,
-        $leave,
-      ],
+      authoritative_events => [$metadata, $admins, $members, $invite, $join, $leave,],
     },
   );
 
@@ -763,9 +694,7 @@ subtest 'derive authoritative channel state uses overnet_actor for delegated joi
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_032,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $invite = Net::Nostr::Group->create_invite(
@@ -774,7 +703,7 @@ subtest 'derive authoritative channel state uses overnet_actor for delegated joi
     code       => 'invite-bob',
     created_at => 1_744_301_033,
   )->to_hash;
-  push @{$invite->{tags}}, [ 'p', 'b' x 64 ];
+  push @{$invite->{tags}}, ['p', 'b' x 64];
 
   my $delegated_join = Net::Nostr::Group->join_request(
     pubkey     => 'd' x 64,
@@ -782,9 +711,7 @@ subtest 'derive authoritative channel state uses overnet_actor for delegated joi
     code       => 'invite-bob',
     created_at => 1_744_301_034,
   )->to_hash;
-  push @{$delegated_join->{tags}},
-    [ 'overnet_actor', 'b' x 64 ],
-    [ 'overnet_authority', 'e' x 64 ];
+  push @{$delegated_join->{tags}}, ['overnet_actor', 'b' x 64], ['overnet_authority', 'e' x 64];
 
   my $result = $adapter->derive(
     operation      => 'authoritative_channel_state',
@@ -792,13 +719,7 @@ subtest 'derive authoritative channel state uses overnet_actor for delegated joi
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $metadata,
-        $admins,
-        $members,
-        $invite,
-        $delegated_join,
-      ],
+      authoritative_events => [$metadata, $admins, $members, $invite, $delegated_join,],
     },
   );
 
@@ -828,17 +749,14 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
     created_at => 1_744_301_020,
     closed     => 1,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'mode', 'moderated' ], [ 'mode', 'topic-restricted' ];
-  push @{$metadata->{tags}}, [ 'topic', 'Current authoritative topic' ], [ 'overnet_actor', 'a' x 64 ];
+  push @{$metadata->{tags}}, ['mode',  'moderated'],                   ['mode',          'topic-restricted'];
+  push @{$metadata->{tags}}, ['topic', 'Current authoritative topic'], ['overnet_actor', 'a' x 64];
 
   my $roles = Net::Nostr::Group->roles(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_024,
-    roles      => [
-      { name => 'irc.operator' },
-      { name => 'irc.voice' },
-    ],
+    roles      => [{name => 'irc.operator'}, {name => 'irc.voice'},],
   )->to_hash;
 
   my $admins = Net::Nostr::Group->admins(
@@ -857,10 +775,7 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_018,
-    members    => [
-      'a' x 64,
-      'c' x 64,
-    ],
+    members    => ['a' x 64, 'c' x 64,],
   )->to_hash;
 
   my $invite_bob = Net::Nostr::Group->create_invite(
@@ -870,10 +785,10 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
     created_at => 1_744_301_021,
   )->to_hash;
   push @{$invite_bob->{tags}},
-    [ 'p', 'b' x 64 ],
-    [ 'overnet_actor', 'a' x 64 ],
-    [ 'overnet_authority', '1' x 64 ],
-    [ 'overnet_sequence', 1 ];
+    ['p',                 'b' x 64],
+    ['overnet_actor',     'a' x 64],
+    ['overnet_authority', '1' x 64],
+    ['overnet_sequence',  1];
 
   my $join_bob = Net::Nostr::Group->join_request(
     pubkey     => 'd' x 64,
@@ -881,10 +796,7 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
     code       => 'invite-bob',
     created_at => 1_744_301_021,
   )->to_hash;
-  push @{$join_bob->{tags}},
-    [ 'overnet_actor', 'b' x 64 ],
-    [ 'overnet_authority', '1' x 64 ],
-    [ 'overnet_sequence', 2 ];
+  push @{$join_bob->{tags}}, ['overnet_actor', 'b' x 64], ['overnet_authority', '1' x 64], ['overnet_sequence', 2];
 
   my $invite_carol = Net::Nostr::Group->create_invite(
     pubkey     => 'a' x 64,
@@ -892,7 +804,7 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
     code       => 'invite-carol',
     created_at => 1_744_301_025,
   )->to_hash;
-  push @{$invite_carol->{tags}}, [ 'p', 'e' x 64 ];
+  push @{$invite_carol->{tags}}, ['p', 'e' x 64];
 
   my $join_alice = Net::Nostr::Group->join_request(
     pubkey     => 'a' x 64,
@@ -907,16 +819,8 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
       network              => 'irc.example.test',
       target               => '#overnet',
       actor_pubkey         => 'e' x 64,
-      authoritative_events => [
-        $join_bob,
-        $roles,
-        $metadata,
-        $invite_carol,
-        $join_alice,
-        $members,
-        $invite_bob,
-        $admins,
-      ],
+      authoritative_events =>
+        [$join_bob, $roles, $metadata, $invite_carol, $join_alice, $members, $invite_bob, $admins,],
     },
   );
 
@@ -924,18 +828,18 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
   is_deeply(
     $result->{view}[0],
     {
-      operation         => 'authoritative_channel_view',
-      authority_profile => 'nip29',
-      object_type       => 'chat.channel',
-      object_id         => 'irc:irc.example.test:#overnet',
-      group_host        => 'groups.example.test',
-      group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
-      channel_modes     => '+imnt',
-      topic             => 'Current authoritative topic',
+      operation          => 'authoritative_channel_view',
+      authority_profile  => 'nip29',
+      object_type        => 'chat.channel',
+      object_id          => 'irc:irc.example.test:#overnet',
+      group_host         => 'groups.example.test',
+      group_id           => 'overnet',
+      group_ref          => "groups.example.test'overnet",
+      channel_modes      => '+imnt',
+      topic              => 'Current authoritative topic',
       topic_actor_pubkey => 'a' x 64,
-      supported_roles   => [ 'irc.operator', 'irc.voice' ],
-      members           => [
+      supported_roles    => ['irc.operator', 'irc.voice'],
+      members            => [
         {
           pubkey                => 'a' x 64,
           roles                 => ['irc.operator'],
@@ -952,7 +856,7 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
           presentational_prefix => '',
         },
       ],
-      present_members   => [
+      present_members => [
         {
           pubkey                => 'a' x 64,
           roles                 => ['irc.operator'],
@@ -964,14 +868,14 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
           presentational_prefix => '',
         },
       ],
-      pending_invites   => [
+      pending_invites => [
         {
           code          => 'invite-carol',
           target_pubkey => 'e' x 64,
         },
       ],
       pending_join_requests => [],
-      admission         => {
+      admission             => {
         allowed     => JSON::true,
         member      => JSON::false,
         invite_code => 'invite-carol',
@@ -988,7 +892,7 @@ subtest 'authoritative_channel_view exposes ban masks and rejects banned joins b
     group_id   => 'overnet',
     created_at => 1_744_301_027,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'ban', 'bob!bob@127.0.0.1' ];
+  push @{$metadata->{tags}}, ['ban', 'bob!bob@127.0.0.1'];
 
   my $admins = Net::Nostr::Group->admins(
     pubkey     => 'f' x 64,
@@ -1010,18 +914,14 @@ subtest 'authoritative_channel_view exposes ban masks and rejects banned joins b
       target               => '#overnet',
       actor_pubkey         => 'b' x 64,
       actor_mask           => 'Bob!bob@127.0.0.1',
-      authoritative_events => [
-        $admins,
-        $metadata,
-      ],
+      authoritative_events => [$admins, $metadata,],
     },
   );
 
   ok $result->{valid}, 'authoritative channel view derivation succeeds for ban enforcement';
   is_deeply(
     $result->{view}[0]{ban_masks},
-    ['bob!bob@127.0.0.1'],
-    'authoritative channel view exposes the current authoritative IRC ban list',
+    ['bob!bob@127.0.0.1'], 'authoritative channel view exposes the current authoritative IRC ban list',
   );
   is_deeply(
     $result->{view}[0]{admission},
@@ -1074,7 +974,8 @@ subtest 'authoritative_join_admission allows an authenticated first join to crea
   );
 };
 
-subtest 'authoritative_join_admission reports auth_required for an absent hosted channel without an actor binding' => sub {
+subtest 'authoritative_join_admission reports auth_required for an absent hosted channel without an actor binding' =>
+  sub {
   my $result = $adapter->derive(
     operation      => 'authoritative_join_admission',
     session_config => _dynamic_authority_config(),
@@ -1098,20 +999,21 @@ subtest 'authoritative_join_admission reports auth_required for an absent hosted
         network => 'irc.example.test',
         channel => '#fresh',
       ),
-      group_ref         => "groups.example.test'" . Overnet::Authority::HostedChannel::authoritative_group_id(
+      group_ref => "groups.example.test'"
+        . Overnet::Authority::HostedChannel::authoritative_group_id(
         network => 'irc.example.test',
         channel => '#fresh',
-      ),
-      allowed           => JSON::false,
-      member            => JSON::false,
-      present           => JSON::false,
-      create_channel    => JSON::false,
-      auth_required     => JSON::true,
-      reason            => 'auth_required',
+        ),
+      allowed        => JSON::false,
+      member         => JSON::false,
+      present        => JSON::false,
+      create_channel => JSON::false,
+      auth_required  => JSON::true,
+      reason         => 'auth_required',
     },
     'absent hosted channels require authenticated actor binding before creation',
   );
-};
+  };
 
 subtest 'authoritative_join_admission returns invite-mediated admission for a closed channel' => sub {
   my $metadata = Net::Nostr::Group->metadata(
@@ -1125,9 +1027,7 @@ subtest 'authoritative_join_admission returns invite-mediated admission for a cl
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_032,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $invite = Net::Nostr::Group->create_invite(
@@ -1136,7 +1036,7 @@ subtest 'authoritative_join_admission returns invite-mediated admission for a cl
     code       => 'invite-bob',
     created_at => 1_744_301_033,
   )->to_hash;
-  push @{$invite->{tags}}, [ 'p', 'b' x 64 ];
+  push @{$invite->{tags}}, ['p', 'b' x 64];
 
   my $result = $adapter->derive(
     operation      => 'authoritative_join_admission',
@@ -1144,13 +1044,9 @@ subtest 'authoritative_join_admission returns invite-mediated admission for a cl
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $metadata,
-        $members,
-        $invite,
-      ],
-      actor_pubkey => 'b' x 64,
-      actor_mask   => 'bob!bob@127.0.0.1',
+      authoritative_events => [$metadata, $members, $invite,],
+      actor_pubkey         => 'b' x 64,
+      actor_mask           => 'bob!bob@127.0.0.1',
     },
   );
 
@@ -1184,7 +1080,7 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
     created_at => 1_744_301_034,
     closed     => 1,
   )->to_hash;
-  push @{$banned_metadata->{tags}}, [ 'ban', 'bob!bob@127.0.0.1' ];
+  push @{$banned_metadata->{tags}}, ['ban', 'bob!bob@127.0.0.1'];
 
   my $banned = $adapter->derive(
     operation      => 'authoritative_join_admission',
@@ -1192,7 +1088,7 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $banned_metadata ],
+      authoritative_events => [$banned_metadata],
       actor_pubkey         => 'b' x 64,
       actor_mask           => 'bob!bob@127.0.0.1',
     },
@@ -1225,7 +1121,7 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
     created_at => 1_744_301_035,
     closed     => 1,
   )->to_hash;
-  push @{$deleted_metadata->{tags}}, [ 'status', 'tombstoned' ];
+  push @{$deleted_metadata->{tags}}, ['status', 'tombstoned'];
 
   my $deleted = $adapter->derive(
     operation      => 'authoritative_join_admission',
@@ -1233,7 +1129,7 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $deleted_metadata ],
+      authoritative_events => [$deleted_metadata],
       actor_pubkey         => 'b' x 64,
       actor_mask           => 'bob!bob@127.0.0.1',
     },
@@ -1268,17 +1164,13 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
     group_id   => 'overnet',
     created_at => 1_744_301_040,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'mode', 'moderated' ];
+  push @{$metadata->{tags}}, ['mode', 'moderated'];
 
   my $members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_041,
-    members    => [
-      'a' x 64,
-      'b' x 64,
-      'c' x 64,
-    ],
+    members    => ['a' x 64, 'b' x 64, 'c' x 64,],
   )->to_hash;
 
   my $ops = Net::Nostr::Group->put_user(
@@ -1303,7 +1195,7 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      authoritative_events => [$metadata, $members, $ops, $voice],
       actor_pubkey         => 'b' x 64,
     },
   );
@@ -1312,17 +1204,17 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
   is_deeply(
     $voiced->{permission}[0],
     {
-      operation         => 'authoritative_speak_permission',
-      authority_profile => 'nip29',
-      object_type       => 'chat.channel',
-      object_id         => 'irc:irc.example.test:#overnet',
-      group_host        => 'groups.example.test',
-      group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
-      allowed           => JSON::true,
-      roles             => ['irc.voice'],
+      operation             => 'authoritative_speak_permission',
+      authority_profile     => 'nip29',
+      object_type           => 'chat.channel',
+      object_id             => 'irc:irc.example.test:#overnet',
+      group_host            => 'groups.example.test',
+      group_id              => 'overnet',
+      group_ref             => "groups.example.test'overnet",
+      allowed               => JSON::true,
+      roles                 => ['irc.voice'],
       presentational_prefix => '+',
-      reason            => '',
+      reason                => '',
     },
     'voiced members may speak in moderated authoritative channels',
   );
@@ -1333,7 +1225,7 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      authoritative_events => [$metadata, $members, $ops, $voice],
       actor_pubkey         => 'c' x 64,
     },
   );
@@ -1342,17 +1234,17 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
   is_deeply(
     $unvoiced->{permission}[0],
     {
-      operation         => 'authoritative_speak_permission',
-      authority_profile => 'nip29',
-      object_type       => 'chat.channel',
-      object_id         => 'irc:irc.example.test:#overnet',
-      group_host        => 'groups.example.test',
-      group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
-      allowed           => JSON::false,
-      roles             => [],
+      operation             => 'authoritative_speak_permission',
+      authority_profile     => 'nip29',
+      object_type           => 'chat.channel',
+      object_id             => 'irc:irc.example.test:#overnet',
+      group_host            => 'groups.example.test',
+      group_id              => 'overnet',
+      group_ref             => "groups.example.test'overnet",
+      allowed               => JSON::false,
+      roles                 => [],
       presentational_prefix => '',
-      reason            => '+m',
+      reason                => '+m',
     },
     'unvoiced non-operators are denied speak permission in moderated authoritative channels',
   );
@@ -1364,16 +1256,13 @@ subtest 'authoritative_topic_permission enforces topic-restricted operator rules
     group_id   => 'overnet',
     created_at => 1_744_301_044,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'mode', 'topic-restricted' ];
+  push @{$metadata->{tags}}, ['mode', 'topic-restricted'];
 
   my $members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_045,
-    members    => [
-      'a' x 64,
-      'b' x 64,
-    ],
+    members    => ['a' x 64, 'b' x 64,],
   )->to_hash;
 
   my $ops = Net::Nostr::Group->put_user(
@@ -1390,7 +1279,7 @@ subtest 'authoritative_topic_permission enforces topic-restricted operator rules
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $ops ],
+      authoritative_events => [$metadata, $members, $ops],
       actor_pubkey         => 'a' x 64,
     },
   );
@@ -1418,7 +1307,7 @@ subtest 'authoritative_topic_permission enforces topic-restricted operator rules
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $ops ],
+      authoritative_events => [$metadata, $members, $ops],
       actor_pubkey         => 'b' x 64,
     },
   );
@@ -1447,19 +1336,16 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
     group_id   => 'overnet',
     created_at => 1_744_301_047,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'closed' ];
-  push @{$metadata->{tags}}, [ 'mode', 'moderated' ];
-  push @{$metadata->{tags}}, [ 'mode', 'topic-restricted' ];
-  push @{$metadata->{tags}}, [ 'ban', '*!*@banned.example' ];
+  push @{$metadata->{tags}}, ['closed'];
+  push @{$metadata->{tags}}, ['mode', 'moderated'];
+  push @{$metadata->{tags}}, ['mode', 'topic-restricted'];
+  push @{$metadata->{tags}}, ['ban',  '*!*@banned.example'];
 
   my $members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_048,
-    members    => [
-      'a' x 64,
-      'b' x 64,
-    ],
+    members    => ['a' x 64, 'b' x 64,],
   )->to_hash;
 
   my $ops = Net::Nostr::Group->put_user(
@@ -1484,10 +1370,10 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      authoritative_events => [$metadata, $members, $ops, $voice],
       actor_pubkey         => 'a' x 64,
       mode                 => '+v',
-      mode_args            => [ 'b' x 64 ],
+      mode_args            => ['b' x 64],
     },
   );
 
@@ -1517,10 +1403,10 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      authoritative_events => [$metadata, $members, $ops, $voice],
       actor_pubkey         => 'a' x 64,
       mode                 => '+b',
-      mode_args            => [ '*!*@new.example' ],
+      mode_args            => ['*!*@new.example'],
     },
   );
 
@@ -1528,27 +1414,27 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
   is_deeply(
     $set_ban->{permission}[0],
     {
-      operation         => 'authoritative_mode_write_permission',
-      authority_profile => 'nip29',
-      object_type       => 'chat.channel',
-      object_id         => 'irc:irc.example.test:#overnet',
-      group_host        => 'groups.example.test',
-      group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
-      allowed           => JSON::true,
-      mode              => '+b',
+      operation           => 'authoritative_mode_write_permission',
+      authority_profile   => 'nip29',
+      object_type         => 'chat.channel',
+      object_id           => 'irc:irc.example.test:#overnet',
+      group_host          => 'groups.example.test',
+      group_id            => 'overnet',
+      group_ref           => "groups.example.test'overnet",
+      allowed             => JSON::true,
+      mode                => '+b',
       normalized_ban_mask => '*!*@new.example',
-      group_metadata    => {
+      group_metadata      => {
         closed           => 1,
         moderated        => 1,
         topic_restricted => 1,
         private          => 0,
         hidden           => 0,
         restricted       => 0,
-        ban_masks        => [ '*!*@banned.example' ],
+        ban_masks        => ['*!*@banned.example'],
         tombstoned       => 0,
       },
-      reason            => '',
+      reason => '',
     },
     'ban mode writes expose current authoritative metadata for subsequent mapping',
   );
@@ -1559,7 +1445,7 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $ops, $voice ],
+      authoritative_events => [$metadata, $members, $ops, $voice],
       actor_pubkey         => 'b' x 64,
       mode                 => '+m',
       mode_args            => [],
@@ -1596,10 +1482,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_052,
-    members    => [
-      'a' x 64,
-      'b' x 64,
-    ],
+    members    => ['a' x 64, 'b' x 64,],
   )->to_hash;
 
   my $live_ops = Net::Nostr::Group->put_user(
@@ -1616,7 +1499,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $live_metadata, $live_members, $live_ops ],
+      authoritative_events => [$live_metadata, $live_members, $live_ops],
       actor_pubkey         => 'a' x 64,
       action               => 'kick',
       target_pubkey        => 'b' x 64,
@@ -1648,7 +1531,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $live_metadata, $live_members, $live_ops ],
+      authoritative_events => [$live_metadata, $live_members, $live_ops],
       actor_pubkey         => 'b' x 64,
       action               => 'delete',
     },
@@ -1677,8 +1560,8 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
     group_id   => 'overnet',
     created_at => 1_744_301_054,
   )->to_hash;
-  push @{$tombstoned->{tags}}, [ 'status', 'tombstoned' ];
-  push @{$tombstoned->{tags}}, [ 'topic', 'retained topic' ];
+  push @{$tombstoned->{tags}}, ['status', 'tombstoned'];
+  push @{$tombstoned->{tags}}, ['topic',  'retained topic'];
 
   my $undelete = $adapter->derive(
     operation      => 'authoritative_channel_action_permission',
@@ -1686,7 +1569,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $live_members, $live_ops, $tombstoned ],
+      authoritative_events => [$live_members, $live_ops, $tombstoned],
       actor_pubkey         => 'a' x 64,
       action               => 'undelete',
     },
@@ -1716,7 +1599,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
         tombstoned       => 1,
         topic            => 'retained topic',
       },
-      reason            => '',
+      reason => '',
     },
     'retained operators may undelete and receive the retained metadata context',
   );
@@ -1728,9 +1611,9 @@ subtest 'authoritative_ban_list_view returns stable normalized authoritative ban
     group_id   => 'overnet',
     created_at => 1_744_301_055,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'ban', '*!*@z.example' ];
-  push @{$metadata->{tags}}, [ 'ban', '*!*@a.example' ];
-  push @{$metadata->{tags}}, [ 'ban', '*!*@a.example' ];
+  push @{$metadata->{tags}}, ['ban', '*!*@z.example'];
+  push @{$metadata->{tags}}, ['ban', '*!*@a.example'];
+  push @{$metadata->{tags}}, ['ban', '*!*@a.example'];
 
   my $result = $adapter->derive(
     operation      => 'authoritative_ban_list_view',
@@ -1738,7 +1621,7 @@ subtest 'authoritative_ban_list_view returns stable normalized authoritative ban
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata ],
+      authoritative_events => [$metadata],
     },
   );
 
@@ -1753,10 +1636,7 @@ subtest 'authoritative_ban_list_view returns stable normalized authoritative ban
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
       group_ref         => "groups.example.test'overnet",
-      ban_masks         => [
-        '*!*@a.example',
-        '*!*@z.example',
-      ],
+      ban_masks         => ['*!*@a.example', '*!*@z.example',],
     },
     'ban-list view exposes stable normalized authoritative ban masks',
   );
@@ -1768,16 +1648,14 @@ subtest 'authoritative_list_entry_view reports list visibility and presentationa
     group_id   => 'overnet',
     created_at => 1_744_301_056,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'topic', 'Authoritative topic' ];
-  push @{$metadata->{tags}}, [ 'mode', 'moderated' ];
+  push @{$metadata->{tags}}, ['topic', 'Authoritative topic'];
+  push @{$metadata->{tags}}, ['mode',  'moderated'];
 
   my $members = Net::Nostr::Group->members(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_057,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $join = Net::Nostr::Group->join_request(
@@ -1792,7 +1670,7 @@ subtest 'authoritative_list_entry_view reports list visibility and presentationa
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $join ],
+      authoritative_events => [$metadata, $members, $join],
     },
   );
 
@@ -1821,7 +1699,7 @@ subtest 'authoritative_list_entry_view reports list visibility and presentationa
     group_id   => 'overnet',
     created_at => 1_744_301_059,
   )->to_hash;
-  push @{$tombstoned->{tags}}, [ 'status', 'tombstoned' ];
+  push @{$tombstoned->{tags}}, ['status', 'tombstoned'];
 
   my $hidden = $adapter->derive(
     operation      => 'authoritative_list_entry_view',
@@ -1829,7 +1707,7 @@ subtest 'authoritative_list_entry_view reports list visibility and presentationa
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [ $metadata, $members, $join, $tombstoned ],
+      authoritative_events => [$metadata, $members, $join, $tombstoned],
     },
   );
 
@@ -1857,10 +1735,7 @@ subtest 'authoritative_channel_state remains a projection of authoritative_chann
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_030,
-    members    => [
-      'a' x 64,
-      'b' x 64,
-    ],
+    members    => ['a' x 64, 'b' x 64,],
   )->to_hash;
 
   my $admins = Net::Nostr::Group->admins(
@@ -1881,10 +1756,7 @@ subtest 'authoritative_channel_state remains a projection of authoritative_chann
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $members,
-        $admins,
-      ],
+      authoritative_events => [$members, $admins,],
     },
   );
 
@@ -1930,9 +1802,7 @@ subtest 'authoritative_channel_view orders same-second invite and join causally 
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_041,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $invite_bob = Net::Nostr::Group->create_invite(
@@ -1942,10 +1812,10 @@ subtest 'authoritative_channel_view orders same-second invite and join causally 
     created_at => 1_744_301_042,
   )->to_hash;
   push @{$invite_bob->{tags}},
-    [ 'p', 'b' x 64 ],
-    [ 'overnet_actor', 'a' x 64 ],
-    [ 'overnet_authority', '1' x 64 ],
-    [ 'overnet_sequence', 5 ];
+    ['p',                 'b' x 64],
+    ['overnet_actor',     'a' x 64],
+    ['overnet_authority', '1' x 64],
+    ['overnet_sequence',  5];
 
   my $join_bob = Net::Nostr::Group->join_request(
     pubkey     => '2' x 64,
@@ -1953,10 +1823,7 @@ subtest 'authoritative_channel_view orders same-second invite and join causally 
     code       => 'invite-bob',
     created_at => 1_744_301_042,
   )->to_hash;
-  push @{$join_bob->{tags}},
-    [ 'overnet_actor', 'b' x 64 ],
-    [ 'overnet_authority', '2' x 64 ],
-    [ 'overnet_sequence', 1 ];
+  push @{$join_bob->{tags}}, ['overnet_actor', 'b' x 64], ['overnet_authority', '2' x 64], ['overnet_sequence', 1];
 
   my $result = $adapter->derive(
     operation      => 'authoritative_channel_view',
@@ -1964,12 +1831,7 @@ subtest 'authoritative_channel_view orders same-second invite and join causally 
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $join_bob,
-        $metadata,
-        $members,
-        $invite_bob,
-      ],
+      authoritative_events => [$join_bob, $metadata, $members, $invite_bob,],
     },
   );
 
@@ -2003,7 +1865,8 @@ subtest 'authoritative_channel_view orders same-second invite and join causally 
   );
 };
 
-subtest 'authoritative_channel_view applies same-second invite before join regardless of authority tag ordering' => sub {
+subtest 'authoritative_channel_view applies same-second invite before join regardless of authority tag ordering' =>
+  sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
@@ -2015,9 +1878,7 @@ subtest 'authoritative_channel_view applies same-second invite before join regar
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_044,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $invite_bob = Net::Nostr::Group->create_invite(
@@ -2027,10 +1888,10 @@ subtest 'authoritative_channel_view applies same-second invite before join regar
     created_at => 1_744_301_045,
   )->to_hash;
   push @{$invite_bob->{tags}},
-    [ 'p', 'b' x 64 ],
-    [ 'overnet_actor', 'a' x 64 ],
-    [ 'overnet_authority', 'f' x 64 ],
-    [ 'overnet_sequence', 1 ];
+    ['p',                 'b' x 64],
+    ['overnet_actor',     'a' x 64],
+    ['overnet_authority', 'f' x 64],
+    ['overnet_sequence',  1];
 
   my $join_bob = Net::Nostr::Group->join_request(
     pubkey     => '1' x 64,
@@ -2038,10 +1899,7 @@ subtest 'authoritative_channel_view applies same-second invite before join regar
     code       => 'invite-bob',
     created_at => 1_744_301_045,
   )->to_hash;
-  push @{$join_bob->{tags}},
-    [ 'overnet_actor', 'b' x 64 ],
-    [ 'overnet_authority', '1' x 64 ],
-    [ 'overnet_sequence', 1 ];
+  push @{$join_bob->{tags}}, ['overnet_actor', 'b' x 64], ['overnet_authority', '1' x 64], ['overnet_sequence', 1];
 
   my $result = $adapter->derive(
     operation      => 'authoritative_channel_view',
@@ -2049,12 +1907,7 @@ subtest 'authoritative_channel_view applies same-second invite before join regar
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $join_bob,
-        $metadata,
-        $members,
-        $invite_bob,
-      ],
+      authoritative_events => [$join_bob, $metadata, $members, $invite_bob,],
     },
   );
 
@@ -2086,9 +1939,10 @@ subtest 'authoritative_channel_view applies same-second invite before join regar
     ],
     'same-second invite-plus-join still yields present membership after the semantic invite phase',
   );
-};
+  };
 
-subtest 'authoritative_channel_view applies same-second removal after join regardless of authority tag ordering' => sub {
+subtest 'authoritative_channel_view applies same-second removal after join regardless of authority tag ordering' =>
+  sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
@@ -2099,9 +1953,7 @@ subtest 'authoritative_channel_view applies same-second removal after join regar
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_047,
-    members    => [
-      'a' x 64,
-    ],
+    members    => ['a' x 64,],
   )->to_hash;
 
   my $join_bob = Net::Nostr::Group->join_request(
@@ -2109,10 +1961,7 @@ subtest 'authoritative_channel_view applies same-second removal after join regar
     group_id   => 'overnet',
     created_at => 1_744_301_048,
   )->to_hash;
-  push @{$join_bob->{tags}},
-    [ 'overnet_actor', 'b' x 64 ],
-    [ 'overnet_authority', 'f' x 64 ],
-    [ 'overnet_sequence', 1 ];
+  push @{$join_bob->{tags}}, ['overnet_actor', 'b' x 64], ['overnet_authority', 'f' x 64], ['overnet_sequence', 1];
 
   my $remove_bob = Net::Nostr::Group->remove_user(
     pubkey     => '1' x 64,
@@ -2120,10 +1969,7 @@ subtest 'authoritative_channel_view applies same-second removal after join regar
     target     => 'b' x 64,
     created_at => 1_744_301_048,
   )->to_hash;
-  push @{$remove_bob->{tags}},
-    [ 'overnet_actor', 'a' x 64 ],
-    [ 'overnet_authority', '1' x 64 ],
-    [ 'overnet_sequence', 1 ];
+  push @{$remove_bob->{tags}}, ['overnet_actor', 'a' x 64], ['overnet_authority', '1' x 64], ['overnet_sequence', 1];
 
   my $result = $adapter->derive(
     operation      => 'authoritative_channel_view',
@@ -2131,12 +1977,7 @@ subtest 'authoritative_channel_view applies same-second removal after join regar
     input          => {
       network              => 'irc.example.test',
       target               => '#overnet',
-      authoritative_events => [
-        $join_bob,
-        $metadata,
-        $members,
-        $remove_bob,
-      ],
+      authoritative_events => [$join_bob, $metadata, $members, $remove_bob,],
     },
   );
 
@@ -2154,10 +1995,9 @@ subtest 'authoritative_channel_view applies same-second removal after join regar
   );
   is_deeply(
     $result->{view}[0]{present_members},
-    [],
-    'same-second removal clears present membership after the semantic removal phase',
+    [], 'same-second removal clears present membership after the semantic removal phase',
   );
-};
+  };
 
 subtest 'derive authoritative channel view treats a tombstoned hosted channel as deleted and non-admissible' => sub {
   my $metadata = Net::Nostr::Group->metadata(
@@ -2166,7 +2006,7 @@ subtest 'derive authoritative channel view treats a tombstoned hosted channel as
     created_at => 1_744_301_010,
     closed     => 1,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'status', 'tombstoned' ];
+  push @{$metadata->{tags}}, ['status', 'tombstoned'];
 
   my $operator = Net::Nostr::Group->put_user(
     pubkey     => 'f' x 64,
@@ -2181,43 +2021,39 @@ subtest 'derive authoritative channel view treats a tombstoned hosted channel as
     group_id   => 'overnet',
     created_at => 1_744_301_012,
   )->to_hash;
-  push @{$join->{tags}}, [ 'overnet_actor', 'a' x 64 ];
+  push @{$join->{tags}}, ['overnet_actor', 'a' x 64];
 
   my $result = $adapter->derive(
-    operation          => 'authoritative_channel_view',
-    session_config     => _authority_config(),
-    input              => {
-      network            => 'irc.example.test',
-      target             => '#overnet',
-      actor_pubkey       => 'a' x 64,
-      authoritative_events => [
-        $metadata,
-        $operator,
-        $join,
-      ],
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      actor_pubkey         => 'a' x 64,
+      authoritative_events => [$metadata, $operator, $join,],
     },
   );
 
-  ok $result->{valid}, 'tombstoned authoritative channel view derives successfully';
+  ok $result->{valid},               'tombstoned authoritative channel view derives successfully';
   ok $result->{view}[0]{tombstoned}, 'the derived authoritative channel view is marked tombstoned';
-  is_deeply $result->{view}[0]{members}, [],
-    'tombstoned authoritative channels do not expose current members';
-  is_deeply $result->{view}[0]{present_members}, [],
-    'tombstoned authoritative channels do not expose present members';
-  ok $result->{view}[0]{admission}{deleted}, 'tombstoned authoritative channels report a deleted admission result';
+  is_deeply $result->{view}[0]{members},         [], 'tombstoned authoritative channels do not expose current members';
+  is_deeply $result->{view}[0]{present_members}, [], 'tombstoned authoritative channels do not expose present members';
+  ok $result->{view}[0]{admission}{deleted},  'tombstoned authoritative channels report a deleted admission result';
   ok !$result->{view}[0]{admission}{allowed}, 'tombstoned authoritative channels reject JOIN admission';
   is $result->{view}[0]{admission}{reason}, 'deleted',
     'tombstoned authoritative channels expose a deleted admission reason';
 };
 
-subtest 'derive authoritative channel view restores retained metadata and durable membership after UNDELETE while clearing presence and invites' => sub {
+subtest
+'derive authoritative channel view restores retained metadata and durable membership after UNDELETE while clearing presence and invites'
+  => sub {
   my $metadata = Net::Nostr::Group->metadata(
     pubkey     => 'f' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_010,
     closed     => 1,
   )->to_hash;
-  push @{$metadata->{tags}}, [ 'topic', 'Retained topic' ];
+  push @{$metadata->{tags}}, ['topic', 'Retained topic'];
 
   my $operator = Net::Nostr::Group->put_user(
     pubkey     => 'f' x 64,
@@ -2241,14 +2077,14 @@ subtest 'derive authoritative channel view restores retained metadata and durabl
     code       => 'invite-carol',
     created_at => 1_744_301_013,
   )->to_hash;
-  push @{$invite->{tags}}, [ 'p', 'c' x 64 ];
+  push @{$invite->{tags}}, ['p', 'c' x 64];
 
   my $join = Net::Nostr::Group->join_request(
     pubkey     => 'a' x 64,
     group_id   => 'overnet',
     created_at => 1_744_301_014,
   )->to_hash;
-  push @{$join->{tags}}, [ 'overnet_actor', 'a' x 64 ];
+  push @{$join->{tags}}, ['overnet_actor', 'a' x 64];
 
   my $tombstone = Net::Nostr::Group->edit_metadata(
     pubkey     => 'f' x 64,
@@ -2256,8 +2092,8 @@ subtest 'derive authoritative channel view restores retained metadata and durabl
     created_at => 1_744_301_015,
     closed     => 1,
   )->to_hash;
-  push @{$tombstone->{tags}}, [ 'topic', 'Retained topic' ];
-  push @{$tombstone->{tags}}, [ 'status', 'tombstoned' ];
+  push @{$tombstone->{tags}}, ['topic',  'Retained topic'];
+  push @{$tombstone->{tags}}, ['status', 'tombstoned'];
 
   my $undelete = Net::Nostr::Group->edit_metadata(
     pubkey     => 'f' x 64,
@@ -2265,34 +2101,25 @@ subtest 'derive authoritative channel view restores retained metadata and durabl
     created_at => 1_744_301_016,
     closed     => 1,
   )->to_hash;
-  push @{$undelete->{tags}}, [ 'topic', 'Retained topic' ];
+  push @{$undelete->{tags}}, ['topic', 'Retained topic'];
 
   my $result = $adapter->derive(
     operation      => 'authoritative_channel_view',
     session_config => _authority_config(),
     input          => {
-      network            => 'irc.example.test',
-      target             => '#overnet',
-      actor_pubkey       => 'b' x 64,
-      authoritative_events => [
-        $metadata,
-        $operator,
-        $member,
-        $invite,
-        $join,
-        $tombstone,
-        $undelete,
-      ],
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      actor_pubkey         => 'b' x 64,
+      authoritative_events => [$metadata, $operator, $member, $invite, $join, $tombstone, $undelete,],
     },
   );
 
-  ok $result->{valid}, 'reactivated authoritative channel view derives successfully';
+  ok $result->{valid},                'reactivated authoritative channel view derives successfully';
   ok !$result->{view}[0]{tombstoned}, 'the reactivated authoritative channel view is no longer marked tombstoned';
-  is $result->{view}[0]{channel_modes}, '+in',
-    'reactivated authoritative channels retain the pre-delete closed mode';
-  is $result->{view}[0]{topic}, 'Retained topic',
-    'reactivated authoritative channels retain the prior topic metadata';
-  is_deeply $result->{view}[0]{members}, [
+  is $result->{view}[0]{channel_modes}, '+in', 'reactivated authoritative channels retain the pre-delete closed mode';
+  is $result->{view}[0]{topic}, 'Retained topic', 'reactivated authoritative channels retain the prior topic metadata';
+  is_deeply $result->{view}[0]{members},
+    [
     {
       pubkey                => 'a' x 64,
       roles                 => ['irc.operator'],
@@ -2303,15 +2130,16 @@ subtest 'derive authoritative channel view restores retained metadata and durabl
       roles                 => [],
       presentational_prefix => '',
     },
-  ], 'reactivated authoritative channels restore retained durable membership';
+    ],
+    'reactivated authoritative channels restore retained durable membership';
   is_deeply $result->{view}[0]{present_members}, [],
     'reactivated authoritative channels clear pre-delete present-member state';
   is_deeply $result->{view}[0]{pending_invites}, [],
     'reactivated authoritative channels clear pre-delete pending invites';
-  ok $result->{view}[0]{admission}{member}, 'retained members remain authoritative members after UNDELETE';
+  ok $result->{view}[0]{admission}{member},  'retained members remain authoritative members after UNDELETE';
   ok $result->{view}[0]{admission}{allowed}, 'retained members may JOIN again after UNDELETE';
   is $result->{view}[0]{admission}{reason}, '',
     'reactivated authoritative channels do not report a join denial reason for retained members';
-};
+  };
 
 done_testing;

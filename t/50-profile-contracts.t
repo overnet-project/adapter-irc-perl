@@ -7,14 +7,15 @@ use File::Spec;
 
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5');
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version});
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version}, $Config{archname});
+use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version},
+  $Config{archname});
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'lib');
 
 use Overnet::Adapter::IRC;
 use Overnet::Core::ProfileContract;
 
-my $spec_root = _spec_root();
-my @contracts = _contract_set($spec_root);
+my $spec_root    = _spec_root();
+my @contracts    = _contract_set($spec_root);
 my $contract_set = Overnet::Core::ProfileContract::validate_contract_set(\@contracts);
 ok $contract_set->{valid}, 'IRC adapter profile contract set is valid'
   or diag explain $contract_set->{errors};
@@ -60,23 +61,19 @@ sub _assert_profile_event_valid {
 
 sub _contract_set {
   my ($spec_root) = @_;
-  my $fixture = _load_json(File::Spec->catfile(
-    $spec_root,
-    'fixtures',
-    'profile-contracts',
-    'valid-irc-adapter-contract-set.json',
-  ));
+  my $fixture = _load_json(
+    File::Spec->catfile($spec_root, 'fixtures', 'profile-contracts', 'valid-irc-adapter-contract-set.json',));
 
-  return map {
-    _load_json(File::Spec->catfile($spec_root, split m{/}mx, $_))->{input}{contract}
-  } @{$fixture->{input}{contract_fixtures}};
+  return
+    map { _load_json(File::Spec->catfile($spec_root, split m{/}mx, $_))->{input}{contract} }
+    @{$fixture->{input}{contract_fixtures}};
 }
 
 sub _fixture_paths {
   my ($spec_root, $family) = @_;
   my $dir = File::Spec->catdir($spec_root, 'fixtures', $family);
   opendir my $dh, $dir or die "Can't open $dir: $!";
-  my @files = sort grep { /\.json\z/mx } readdir $dh;
+  my @files = sort grep {/\.json\z/mx} readdir $dh;
   closedir $dh;
   return map { File::Spec->catfile($dir, $_) } @files;
 }
