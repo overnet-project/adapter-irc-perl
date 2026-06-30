@@ -13,5 +13,7 @@ t/20-derived-presence-fixtures.t
 t/30-nip29-authoritative.t
 t/40-spec-conformance.t
 t/50-profile-contracts.t
+t/input-validation.t
 t/makemaker-metadata.t
 t/manifest-skip-policy.t
+t/shared-perl-layout.t

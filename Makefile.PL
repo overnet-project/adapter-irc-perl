@@ -2,6 +2,10 @@ use strictures 2;
 
 use ExtUtils::MakeMaker;
 
+our $VERSION = '0.001';
+
+my $space = chr 32;
+
 WriteMakefile(
   NAME               => 'Overnet::Adapter::IRC',
   DISTNAME           => 'Overnet-Adapter-IRC',
@@ -22,12 +26,14 @@ WriteMakefile(
   },
   test => {
     TESTS => join(
-      ' ',
+      $space,
       qw(
         t/00-load.t
+        t/input-validation.t
         t/30-nip29-authoritative.t
         t/makemaker-metadata.t
         t/manifest-skip-policy.t
+        t/shared-perl-layout.t
       )
     ),
   },

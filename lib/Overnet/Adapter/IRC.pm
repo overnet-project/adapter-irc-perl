@@ -101,8 +101,8 @@ sub _validate_map_input_args {
   if (!_non_empty_scalar($args->{nick})) {
     return _error('Sender nick is required');
   }
-  if (!defined $args->{created_at}) {
-    return _error('created_at is required');
+  if (!_non_negative_integer($args->{created_at})) {
+    return _error('created_at must be a non-negative integer');
   }
 
   my $identity_error = _validate_irc_identity_args($args);
@@ -163,6 +163,16 @@ sub _positive_integer_string {
   my ($value) = @_;
 
   if (defined($value) && !ref($value) && $value =~ /\A[1-9][0-9]*\z/msx) {
+    return 1;
+  }
+
+  return 0;
+}
+
+sub _non_negative_integer {
+  my ($value) = @_;
+
+  if (defined($value) && !ref($value) && $value =~ /\A[0-9]+\z/msx) {
     return 1;
   }
 
@@ -537,8 +547,8 @@ sub _validate_presence_args {
   if (!_is_channel_target($args->{target})) {
     return _error('Presence target must be a channel');
   }
-  if (!defined $args->{created_at}) {
-    return _error('created_at is required');
+  if (!_non_negative_integer($args->{created_at})) {
+    return _error('created_at must be a non-negative integer');
   }
   if (ref($args->{events}) ne 'ARRAY' || !@{$args->{events}}) {
     return _error('events must be a non-empty array');
@@ -597,8 +607,8 @@ sub _presence_event_context {
   if (!_non_empty_scalar($event->{nick})) {
     return (undef, 'derived presence event nick is required');
   }
-  if (!defined $event->{created_at}) {
-    return (undef, 'derived presence event created_at is required');
+  if (!_non_negative_integer($event->{created_at})) {
+    return (undef, 'derived presence event created_at must be a non-negative integer');
   }
 
   my ($irc_identity, $identity_error) = _presence_identity_from_event($event);
@@ -2228,8 +2238,8 @@ sub _nip29_authoritative_input_context {
   my ($args) = @_;
   my $session_config = _session_config_from_args($args->{session_config});
 
-  if (!defined $args->{created_at}) {
-    return (undef, 'created_at is required');
+  if (!_non_negative_integer($args->{created_at})) {
+    return (undef, 'created_at must be a non-negative integer');
   }
 
   my ($group_host, $group_id, $binding_error) = _resolve_nip29_group_binding(

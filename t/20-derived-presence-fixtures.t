@@ -1,14 +1,8 @@
 use strictures 2;
-use Test::More;
+use Test2::V0;
 use JSON ();
-use Config;
 use FindBin;
 use File::Spec;
-
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5');
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version});
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version},
-  $Config{archname});
 
 use Overnet::Adapter::IRC;
 
@@ -33,7 +27,9 @@ for my $file (@fixture_files) {
   subtest "$file - $desc" => sub {
     my $result = $adapter->derive_channel_presence(%{$input});
 
-    is $result->{valid}, $expected->{overnet_valid}, "valid = $expected->{overnet_valid}";
+    my $expected_valid = $expected->{overnet_valid} ? 1 : 0;
+    my $got_valid      = $result->{valid}           ? 1 : 0;
+    is $got_valid, $expected_valid, "valid = $expected_valid";
 
     if ($expected->{overnet_valid}) {
       my $got_event      = {%{$result->{event}}};
@@ -42,8 +38,8 @@ for my $file (@fixture_files) {
       my $got_content      = delete $got_event->{content};
       my $expected_content = delete $expected_event->{content};
 
-      is_deeply $got_event, $expected_event, 'derived event envelope matches fixture';
-      is_deeply JSON::decode_json($got_content), JSON::decode_json($expected_content),
+      is $got_event, $expected_event, 'derived event envelope matches fixture';
+      is JSON::decode_json($got_content), JSON::decode_json($expected_content),
         'derived event content matches fixture semantically';
     } else {
       is $result->{reason}, $expected->{reason}, 'reason matches fixture';
@@ -85,7 +81,7 @@ subtest 'generic derive rejects unsupported operations' => sub {
 };
 
 subtest 'adapter declares secure secret slots for runtime session opens' => sub {
-  is_deeply(
+  is(
     $adapter->supported_secret_slots,
     ['server_password', 'nickserv_password', 'sasl_password'],
     'IRC adapter declares the supported runtime secret slots',

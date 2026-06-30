@@ -1,13 +1,8 @@
 use strictures 2;
-use Config;
 use FindBin;
 use File::Spec;
-use Test::More;
+use Test2::V0;
 
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5');
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version});
-use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'local', 'lib', 'perl5', $Config{version},
-  $Config{archname});
 use lib File::Spec->catdir($FindBin::Bin, '..', '..', 'core-perl', 'lib');
 
 use Overnet::Test::SpecConformance qw(
