@@ -1,6 +1,16 @@
 use strictures 2;
-use Test::More;
+use Test2::V0;
 
-use_ok('Overnet::Adapter::IRC');
+my $module = 'Overnet::Adapter::IRC';
+my $path   = $module =~ s{::}{/}gr . '.pm';
+my $loaded = eval {
+  require $path;
+  1;
+};
+ok $loaded, "$module loads"
+  or diag $@;
+
+my $adapter = Overnet::Adapter::IRC->new({});
+isa_ok $adapter, ['Overnet::Adapter::IRC'], 'hashref constructor';
 
 done_testing;

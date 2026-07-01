@@ -32,6 +32,7 @@ is(
   $args->{PREREQ_PM},
   {
     'JSON'       => 0,
+    'Moo'        => 0,
     'Net::Nostr' => 0,
     'Overnet'    => 0.001,
     'strictures' => 2,

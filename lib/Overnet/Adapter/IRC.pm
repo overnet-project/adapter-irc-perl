@@ -1,6 +1,7 @@
 package Overnet::Adapter::IRC;
 
 use strictures 2;
+use Moo;
 use Carp                              qw(croak);
 use English                           qw(-no_match_vars);
 use JSON                              ();
@@ -11,11 +12,24 @@ use Net::Nostr::Group;
 our $VERSION = '0.001';
 my $JSON = JSON->new;
 
-sub new {
-  my ($class, %args) = @_;
+has overnet_version => (is => 'ro');
+has session_state   => (is => 'ro');
+
+no Moo;
+
+sub BUILDARGS {
+  my ($class, @args) = @_;
+  my %args = _constructor_args_hash(@args);
   $args{overnet_version} //= '0.1.0';
   $args{session_state} ||= {};
-  return bless \%args, $class;
+  return \%args;
+}
+
+sub _constructor_args_hash {
+  my (@args) = @_;
+  return %{$args[0]} if @args == 1 && ref($args[0]) eq 'HASH';
+  return @args       if @args % 2 == 0;
+  die "constructor arguments must be a hash or hash reference\n";
 }
 
 sub supported_secret_slots {
