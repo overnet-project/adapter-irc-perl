@@ -13,7 +13,7 @@ my $spec_root    = _spec_root();
 my @contracts    = _contract_set($spec_root);
 my $contract_set = Overnet::Core::ProfileContract::validate_contract_set(\@contracts);
 ok $contract_set->{valid}, 'IRC adapter profile contract set is valid'
-  or diag explain $contract_set->{errors};
+  or diag(JSON->new->canonical(1)->pretty(1)->encode($contract_set->{errors}));
 
 my $adapter = Overnet::Adapter::IRC->new;
 
@@ -50,7 +50,7 @@ sub _assert_profile_event_valid {
 
   ok $result->{applicable}, 'profile contract applies to adapter event';
   ok $result->{valid}, 'adapter event satisfies profile contract'
-    or diag explain $result->{errors};
+    or diag(JSON->new->canonical(1)->pretty(1)->encode($result->{errors}));
   return;
 }
 
