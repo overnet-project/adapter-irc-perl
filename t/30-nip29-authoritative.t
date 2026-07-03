@@ -1,6 +1,6 @@
 use strictures 2;
 use JSON ();
-use Test::More;
+use Test2::V0;
 
 use Net::Nostr::Group;
 use Overnet::Authority::HostedChannel ();
@@ -25,6 +25,14 @@ sub _dynamic_authority_config {
   };
 }
 
+sub _group_ref {
+  my ($pubkey, $group_id) = @_;
+  return Net::Nostr::Group->format_id(
+    pubkey   => $pubkey,
+    group_id => $group_id,
+  );
+}
+
 subtest 'authoritative KICK maps to a NIP-29 remove-user event draft' => sub {
   my $result = $adapter->map_input(
     session_config => _authority_config(),
@@ -43,7 +51,7 @@ subtest 'authoritative KICK maps to a NIP-29 remove-user event draft' => sub {
   is $result->{event}{kind},    9001,             'authoritative KICK emits kind 9001';
   is $result->{event}{pubkey},  'a' x 64,         'authoritative KICK uses the actor pubkey';
   is $result->{event}{content}, 'rule violation', 'authoritative KICK carries the reason in content';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [['h', 'overnet'], ['p', 'b' x 64],],
     'authoritative KICK targets the bound NIP-29 group member',
@@ -69,7 +77,7 @@ subtest 'authoritative MODE +o maps to a NIP-29 put-user event draft' => sub {
 
   ok $result->{valid}, 'authoritative MODE +o is accepted';
   is $result->{event}{kind}, 9000, 'authoritative MODE +o emits kind 9000';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [['h', 'overnet'], ['p', 'b' x 64, 'irc.operator', 'irc.voice'],],
     'authoritative MODE +o updates roles through the NIP-29 member tag',
@@ -94,7 +102,7 @@ subtest 'authoritative MODE +m maps to a NIP-29 metadata edit with IRC profile m
 
   ok $result->{valid}, 'authoritative MODE +m is accepted';
   is $result->{event}{kind}, 9002, 'authoritative MODE +m emits kind 9002';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [['h', 'overnet'], ['closed'], ['mode', 'moderated'],],
     'authoritative MODE +m preserves existing metadata flags and adds the moderated mode tag',
@@ -120,7 +128,7 @@ subtest 'authoritative MODE +b and -b map to NIP-29 metadata edits carrying the 
 
   ok $add_result->{valid}, 'authoritative MODE +b is accepted';
   is $add_result->{event}{kind}, 9002, 'authoritative MODE +b emits kind 9002';
-  is_deeply(
+  is(
     $add_result->{event}{tags},
     [['h', 'overnet'], ['closed'], ['ban', '*!*@evil.example'], ['ban', 'bob!bob@127.0.0.1'],],
     'authoritative MODE +b preserves existing bans and appends the new IRC ban mask',
@@ -144,7 +152,7 @@ subtest 'authoritative MODE +b and -b map to NIP-29 metadata edits carrying the 
 
   ok $remove_result->{valid}, 'authoritative MODE -b is accepted';
   is $remove_result->{event}{kind}, 9002, 'authoritative MODE -b emits kind 9002';
-  is_deeply(
+  is(
     $remove_result->{event}{tags},
     [['h', 'overnet'], ['closed'], ['ban', '*!*@evil.example'],],
     'authoritative MODE -b removes only the targeted IRC ban mask',
@@ -170,7 +178,7 @@ subtest 'authoritative TOPIC maps to a NIP-29 metadata edit with the IRC topic t
 
   ok $result->{valid}, 'authoritative TOPIC is accepted';
   is $result->{event}{kind}, 9002, 'authoritative TOPIC emits kind 9002';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [
       ['h', 'overnet'],
@@ -203,7 +211,7 @@ subtest 'authoritative DELETE maps to a NIP-29 metadata edit with the tombstone 
 
   ok $result->{valid}, 'authoritative DELETE is accepted';
   is $result->{event}{kind}, 9002, 'authoritative DELETE emits kind 9002';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [
       ['h', 'overnet'],
@@ -239,7 +247,7 @@ subtest 'authoritative UNDELETE maps to a NIP-29 metadata edit that removes the 
 
   ok $result->{valid}, 'authoritative UNDELETE is accepted';
   is $result->{event}{kind}, 9002, 'authoritative UNDELETE emits kind 9002';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [
       ['h', 'overnet'],
@@ -269,7 +277,7 @@ subtest 'authoritative INVITE maps to a NIP-29 create-invite event draft' => sub
 
   ok $result->{valid}, 'authoritative INVITE is accepted';
   is $result->{event}{kind}, 9009, 'authoritative INVITE emits kind 9009';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [['h', 'overnet'], ['code', 'invite-bob'], ['p', 'b' x 64],],
     'authoritative INVITE targets the bound NIP-29 group with an invite code and invitee pubkey',
@@ -303,12 +311,12 @@ subtest 'authoritative JOIN can bootstrap a newly created hosted channel without
   ok ref($result->{events}) eq 'ARRAY', 'authoritative bootstrap JOIN emits multiple event drafts';
   is scalar(@{$result->{events}}), 3,
     'authoritative bootstrap JOIN emits metadata, operator bootstrap, and join drafts';
-  is_deeply(
+  is(
     [map { $_->{kind} } @{$result->{events}}],
     [39000, 9000, 9021],
     'authoritative bootstrap JOIN emits the expected NIP-29 event kinds',
   );
-  is_deeply(
+  is(
     $result->{events}[0]{tags},
     [
       ['d',                 $group_id],
@@ -319,7 +327,7 @@ subtest 'authoritative JOIN can bootstrap a newly created hosted channel without
     ],
     'authoritative bootstrap metadata uses the deterministic binding and delegated authority tags',
   );
-  is_deeply(
+  is(
     $result->{events}[1]{tags},
     [
       ['h',                 $group_id],
@@ -330,7 +338,7 @@ subtest 'authoritative JOIN can bootstrap a newly created hosted channel without
     ],
     'authoritative bootstrap role event seeds the creator as irc.operator',
   );
-  is_deeply(
+  is(
     $result->{events}[2]{tags},
     [['h', $group_id], ['overnet_actor', 'a' x 64], ['overnet_authority', 'e' x 64], ['overnet_sequence', 11],],
     'authoritative bootstrap join uses the deterministic binding and delegated actor tags',
@@ -355,7 +363,7 @@ subtest 'authoritative JOIN can target a delegated signer while preserving the e
   ok $result->{valid}, 'delegated authoritative JOIN is accepted';
   is $result->{event}{kind},   9021,     'delegated authoritative JOIN emits kind 9021';
   is $result->{event}{pubkey}, 'd' x 64, 'delegated authoritative JOIN uses the delegated signer pubkey';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [
       ['h',                 'overnet'],
@@ -384,7 +392,7 @@ subtest 'authoritative PART maps to a NIP-29 leave-request event draft' => sub {
   is $result->{event}{kind},    9022,     'authoritative PART emits kind 9022';
   is $result->{event}{pubkey},  'b' x 64, 'authoritative PART uses the actor pubkey';
   is $result->{event}{content}, 'later',  'authoritative PART carries the part reason in content';
-  is_deeply(
+  is(
     $result->{event}{tags},
     [['h', 'overnet'],],
     'authoritative PART targets the bound NIP-29 group without a member p tag',
@@ -437,7 +445,7 @@ subtest 'derive authoritative channel state reconstructs IRC-facing state from N
   );
 
   ok $result->{valid}, 'authoritative state derivation succeeds';
-  is_deeply(
+  is(
     $result->{state}[0],
     {
       operation         => 'authoritative_channel_state',
@@ -446,7 +454,7 @@ subtest 'derive authoritative channel state reconstructs IRC-facing state from N
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       channel_modes     => '+imn',
       supported_roles   => ['irc.operator', 'irc.voice'],
       members           => [
@@ -528,7 +536,7 @@ subtest 'derive authoritative channel state accepts a matching invite code plus 
 
   ok $result->{valid}, 'authoritative state derivation succeeds for invite-mediated admission';
   is $result->{state}[0]{channel_modes}, '+in', 'closed authoritative channel keeps +i and implicit +n';
-  is_deeply(
+  is(
     $result->{state}[0]{members},
     [
       {
@@ -579,7 +587,7 @@ subtest 'derive authoritative channel state does not treat 39002 membership snap
   );
 
   ok $result->{valid}, 'authoritative state derivation succeeds for partial 39002 snapshots';
-  is_deeply(
+  is(
     $result->{state}[0]{members},
     [
       {
@@ -657,7 +665,7 @@ subtest 'derive authoritative channel state removes local membership after a lea
   );
 
   ok $result->{valid}, 'authoritative state derivation succeeds for leave requests';
-  is_deeply(
+  is(
     $result->{state}[0]{members},
     [
       {
@@ -724,7 +732,7 @@ subtest 'derive authoritative channel state uses overnet_actor for delegated joi
   );
 
   ok $result->{valid}, 'delegated authoritative state derivation succeeds';
-  is_deeply(
+  is(
     $result->{state}[0]{members},
     [
       {
@@ -825,7 +833,7 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
   );
 
   ok $result->{valid}, 'authoritative channel view derivation succeeds';
-  is_deeply(
+  is(
     $result->{view}[0],
     {
       operation          => 'authoritative_channel_view',
@@ -834,7 +842,7 @@ subtest 'authoritative_channel_view sorts authoritative events and exposes admis
       object_id          => 'irc:irc.example.test:#overnet',
       group_host         => 'groups.example.test',
       group_id           => 'overnet',
-      group_ref          => "groups.example.test'overnet",
+      group_ref          => _group_ref('f' x 64, 'overnet'),
       channel_modes      => '+imnt',
       topic              => 'Current authoritative topic',
       topic_actor_pubkey => 'a' x 64,
@@ -919,11 +927,11 @@ subtest 'authoritative_channel_view exposes ban masks and rejects banned joins b
   );
 
   ok $result->{valid}, 'authoritative channel view derivation succeeds for ban enforcement';
-  is_deeply(
+  is(
     $result->{view}[0]{ban_masks},
     ['bob!bob@127.0.0.1'], 'authoritative channel view exposes the current authoritative IRC ban list',
   );
-  is_deeply(
+  is(
     $result->{view}[0]{admission},
     {
       allowed => JSON::false,
@@ -953,7 +961,7 @@ subtest 'authoritative_join_admission allows an authenticated first join to crea
   );
 
   ok $result->{valid}, 'join admission derivation succeeds for an absent hosted channel';
-  is_deeply(
+  is(
     $result->{admission}[0],
     {
       operation         => 'authoritative_join_admission',
@@ -962,7 +970,7 @@ subtest 'authoritative_join_admission allows an authenticated first join to crea
       object_id         => 'irc:irc.example.test:#fresh',
       group_host        => 'groups.example.test',
       group_id          => $group_id,
-      group_ref         => "groups.example.test'$group_id",
+      group_ref         => _group_ref('a' x 64, $group_id),
       allowed           => JSON::true,
       member            => JSON::false,
       present           => JSON::false,
@@ -987,7 +995,7 @@ subtest 'authoritative_join_admission reports auth_required for an absent hosted
   );
 
   ok $result->{valid}, 'join admission derivation succeeds without an actor binding';
-  is_deeply(
+  is(
     $result->{admission}[0],
     {
       operation         => 'authoritative_join_admission',
@@ -999,11 +1007,7 @@ subtest 'authoritative_join_admission reports auth_required for an absent hosted
         network => 'irc.example.test',
         channel => '#fresh',
       ),
-      group_ref => "groups.example.test'"
-        . Overnet::Authority::HostedChannel::authoritative_group_id(
-        network => 'irc.example.test',
-        channel => '#fresh',
-        ),
+      group_ref => undef,
       allowed        => JSON::false,
       member         => JSON::false,
       present        => JSON::false,
@@ -1051,7 +1055,7 @@ subtest 'authoritative_join_admission returns invite-mediated admission for a cl
   );
 
   ok $result->{valid}, 'join admission derivation succeeds for a closed invited channel';
-  is_deeply(
+  is(
     $result->{admission}[0],
     {
       operation         => 'authoritative_join_admission',
@@ -1060,7 +1064,7 @@ subtest 'authoritative_join_admission returns invite-mediated admission for a cl
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       allowed           => JSON::true,
       member            => JSON::false,
       present           => JSON::false,
@@ -1095,7 +1099,7 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
   );
 
   ok $banned->{valid}, 'join admission derivation succeeds for a banned actor';
-  is_deeply(
+  is(
     $banned->{admission}[0],
     {
       operation         => 'authoritative_join_admission',
@@ -1104,7 +1108,7 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       allowed           => JSON::false,
       member            => JSON::false,
       present           => JSON::false,
@@ -1136,7 +1140,7 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
   );
 
   ok $deleted->{valid}, 'join admission derivation succeeds for a tombstoned channel';
-  is_deeply(
+  is(
     $deleted->{admission}[0],
     {
       operation         => 'authoritative_join_admission',
@@ -1145,7 +1149,7 @@ subtest 'authoritative_join_admission returns symbolic banned and deleted denial
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       allowed           => JSON::false,
       member            => JSON::false,
       present           => JSON::false,
@@ -1201,7 +1205,7 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
   );
 
   ok $voiced->{valid}, 'speak permission derivation succeeds for voiced members';
-  is_deeply(
+  is(
     $voiced->{permission}[0],
     {
       operation             => 'authoritative_speak_permission',
@@ -1210,7 +1214,7 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
       object_id             => 'irc:irc.example.test:#overnet',
       group_host            => 'groups.example.test',
       group_id              => 'overnet',
-      group_ref             => "groups.example.test'overnet",
+      group_ref             => _group_ref('f' x 64, 'overnet'),
       allowed               => JSON::true,
       roles                 => ['irc.voice'],
       presentational_prefix => '+',
@@ -1231,7 +1235,7 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
   );
 
   ok $unvoiced->{valid}, 'speak permission derivation succeeds for unvoiced members';
-  is_deeply(
+  is(
     $unvoiced->{permission}[0],
     {
       operation             => 'authoritative_speak_permission',
@@ -1240,7 +1244,7 @@ subtest 'authoritative_speak_permission enforces moderated channel voice and ope
       object_id             => 'irc:irc.example.test:#overnet',
       group_host            => 'groups.example.test',
       group_id              => 'overnet',
-      group_ref             => "groups.example.test'overnet",
+      group_ref             => _group_ref('f' x 64, 'overnet'),
       allowed               => JSON::false,
       roles                 => [],
       presentational_prefix => '',
@@ -1285,7 +1289,7 @@ subtest 'authoritative_topic_permission enforces topic-restricted operator rules
   );
 
   ok $operator->{valid}, 'topic permission derivation succeeds for operators';
-  is_deeply(
+  is(
     $operator->{permission}[0],
     {
       operation         => 'authoritative_topic_permission',
@@ -1294,7 +1298,7 @@ subtest 'authoritative_topic_permission enforces topic-restricted operator rules
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       allowed           => JSON::true,
       reason            => '',
     },
@@ -1313,7 +1317,7 @@ subtest 'authoritative_topic_permission enforces topic-restricted operator rules
   );
 
   ok $member->{valid}, 'topic permission derivation succeeds for non-operators';
-  is_deeply(
+  is(
     $member->{permission}[0],
     {
       operation         => 'authoritative_topic_permission',
@@ -1322,7 +1326,7 @@ subtest 'authoritative_topic_permission enforces topic-restricted operator rules
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       allowed           => JSON::false,
       reason            => '+t',
     },
@@ -1378,7 +1382,7 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
   );
 
   ok $grant_voice->{valid}, 'mode permission derivation succeeds for operators';
-  is_deeply(
+  is(
     $grant_voice->{permission}[0],
     {
       operation         => 'authoritative_mode_write_permission',
@@ -1387,7 +1391,7 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       allowed           => JSON::true,
       mode              => '+v',
       target_pubkey     => 'b' x 64,
@@ -1411,7 +1415,7 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
   );
 
   ok $set_ban->{valid}, 'ban mode permission derivation succeeds for operators';
-  is_deeply(
+  is(
     $set_ban->{permission}[0],
     {
       operation           => 'authoritative_mode_write_permission',
@@ -1420,7 +1424,7 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
       object_id           => 'irc:irc.example.test:#overnet',
       group_host          => 'groups.example.test',
       group_id            => 'overnet',
-      group_ref           => "groups.example.test'overnet",
+      group_ref           => _group_ref('f' x 64, 'overnet'),
       allowed             => JSON::true,
       mode                => '+b',
       normalized_ban_mask => '*!*@new.example',
@@ -1453,7 +1457,7 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
   );
 
   ok $non_operator->{valid}, 'mode permission derivation still succeeds for non-operators';
-  is_deeply(
+  is(
     $non_operator->{permission}[0],
     {
       operation         => 'authoritative_mode_write_permission',
@@ -1462,7 +1466,7 @@ subtest 'authoritative_mode_write_permission resolves operator mode and ban cont
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       allowed           => JSON::false,
       mode              => '+m',
       reason            => 'not_operator',
@@ -1507,7 +1511,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
   );
 
   ok $kick->{valid}, 'action permission derivation succeeds for kick';
-  is_deeply(
+  is(
     $kick->{permission}[0],
     {
       operation         => 'authoritative_channel_action_permission',
@@ -1516,7 +1520,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       action            => 'kick',
       allowed           => JSON::true,
       target_pubkey     => 'b' x 64,
@@ -1538,7 +1542,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
   );
 
   ok $delete->{valid}, 'action permission derivation still succeeds for rejected delete';
-  is_deeply(
+  is(
     $delete->{permission}[0],
     {
       operation         => 'authoritative_channel_action_permission',
@@ -1547,7 +1551,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       action            => 'delete',
       allowed           => JSON::false,
       reason            => 'not_operator',
@@ -1576,7 +1580,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
   );
 
   ok $undelete->{valid}, 'action permission derivation succeeds for undelete';
-  is_deeply(
+  is(
     $undelete->{permission}[0],
     {
       operation         => 'authoritative_channel_action_permission',
@@ -1585,7 +1589,7 @@ subtest 'authoritative_channel_action_permission resolves kick, delete, and unde
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       action            => 'undelete',
       allowed           => JSON::true,
       group_metadata    => {
@@ -1626,7 +1630,7 @@ subtest 'authoritative_ban_list_view returns stable normalized authoritative ban
   );
 
   ok $result->{valid}, 'ban-list view derivation succeeds';
-  is_deeply(
+  is(
     $result->{view}[0],
     {
       operation         => 'authoritative_ban_list_view',
@@ -1635,7 +1639,7 @@ subtest 'authoritative_ban_list_view returns stable normalized authoritative ban
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       ban_masks         => ['*!*@a.example', '*!*@z.example',],
     },
     'ban-list view exposes stable normalized authoritative ban masks',
@@ -1675,7 +1679,7 @@ subtest 'authoritative_list_entry_view reports list visibility and presentationa
   );
 
   ok $visible->{valid}, 'list-entry view derivation succeeds';
-  is_deeply(
+  is(
     $visible->{view}[0],
     {
       operation         => 'authoritative_list_entry_view',
@@ -1684,7 +1688,7 @@ subtest 'authoritative_list_entry_view reports list visibility and presentationa
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       channel           => '#overnet',
       visible_in_list   => JSON::true,
       channel_modes     => '+mn',
@@ -1712,7 +1716,7 @@ subtest 'authoritative_list_entry_view reports list visibility and presentationa
   );
 
   ok $hidden->{valid}, 'list-entry view derivation succeeds for tombstoned channels';
-  is_deeply(
+  is(
     $hidden->{view}[0],
     {
       operation         => 'authoritative_list_entry_view',
@@ -1721,7 +1725,7 @@ subtest 'authoritative_list_entry_view reports list visibility and presentationa
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       channel           => '#overnet',
       visible_in_list   => JSON::false,
       reason            => 'deleted',
@@ -1761,7 +1765,7 @@ subtest 'authoritative_channel_state remains a projection of authoritative_chann
   );
 
   ok $result->{valid}, 'compatibility projection succeeds';
-  is_deeply(
+  is(
     $result->{state}[0],
     {
       operation         => 'authoritative_channel_state',
@@ -1770,7 +1774,7 @@ subtest 'authoritative_channel_state remains a projection of authoritative_chann
       object_id         => 'irc:irc.example.test:#overnet',
       group_host        => 'groups.example.test',
       group_id          => 'overnet',
-      group_ref         => "groups.example.test'overnet",
+      group_ref         => _group_ref('f' x 64, 'overnet'),
       channel_modes     => '+n',
       supported_roles   => [],
       members           => [
@@ -1836,7 +1840,7 @@ subtest 'authoritative_channel_view orders same-second invite and join causally 
   );
 
   ok $result->{valid}, 'derivation succeeds when same-second invite and join come from different authorities';
-  is_deeply(
+  is(
     $result->{view}[0]{members},
     [
       {
@@ -1852,7 +1856,7 @@ subtest 'authoritative_channel_view orders same-second invite and join causally 
     ],
     'semantic ordering still applies the invite before the join across authorities',
   );
-  is_deeply(
+  is(
     $result->{view}[0]{present_members},
     [
       {
@@ -1912,7 +1916,7 @@ subtest 'authoritative_channel_view applies same-second invite before join regar
   );
 
   ok $result->{valid}, 'derivation succeeds when same-second invite and join use conflicting authority sort order';
-  is_deeply(
+  is(
     $result->{view}[0]{members},
     [
       {
@@ -1928,7 +1932,7 @@ subtest 'authoritative_channel_view applies same-second invite before join regar
     ],
     'invite admission still applies before the same-second join even when authority tags sort the other way',
   );
-  is_deeply(
+  is(
     $result->{view}[0]{present_members},
     [
       {
@@ -1982,7 +1986,7 @@ subtest 'authoritative_channel_view applies same-second removal after join regar
   );
 
   ok $result->{valid}, 'derivation succeeds when same-second join and removal use conflicting authority sort order';
-  is_deeply(
+  is(
     $result->{view}[0]{members},
     [
       {
@@ -1993,7 +1997,7 @@ subtest 'authoritative_channel_view applies same-second removal after join regar
     ],
     'same-second removal still applies after the join and removes the member even when authority tags sort first',
   );
-  is_deeply(
+  is(
     $result->{view}[0]{present_members},
     [], 'same-second removal clears present membership after the semantic removal phase',
   );
@@ -2036,8 +2040,8 @@ subtest 'derive authoritative channel view treats a tombstoned hosted channel as
 
   ok $result->{valid},               'tombstoned authoritative channel view derives successfully';
   ok $result->{view}[0]{tombstoned}, 'the derived authoritative channel view is marked tombstoned';
-  is_deeply $result->{view}[0]{members},         [], 'tombstoned authoritative channels do not expose current members';
-  is_deeply $result->{view}[0]{present_members}, [], 'tombstoned authoritative channels do not expose present members';
+  is $result->{view}[0]{members},         [], 'tombstoned authoritative channels do not expose current members';
+  is $result->{view}[0]{present_members}, [], 'tombstoned authoritative channels do not expose present members';
   ok $result->{view}[0]{admission}{deleted},  'tombstoned authoritative channels report a deleted admission result';
   ok !$result->{view}[0]{admission}{allowed}, 'tombstoned authoritative channels reject JOIN admission';
   is $result->{view}[0]{admission}{reason}, 'deleted',
@@ -2118,7 +2122,7 @@ subtest
   ok !$result->{view}[0]{tombstoned}, 'the reactivated authoritative channel view is no longer marked tombstoned';
   is $result->{view}[0]{channel_modes}, '+in', 'reactivated authoritative channels retain the pre-delete closed mode';
   is $result->{view}[0]{topic}, 'Retained topic', 'reactivated authoritative channels retain the prior topic metadata';
-  is_deeply $result->{view}[0]{members},
+  is $result->{view}[0]{members},
     [
     {
       pubkey                => 'a' x 64,
@@ -2132,9 +2136,9 @@ subtest
     },
     ],
     'reactivated authoritative channels restore retained durable membership';
-  is_deeply $result->{view}[0]{present_members}, [],
+  is $result->{view}[0]{present_members}, [],
     'reactivated authoritative channels clear pre-delete present-member state';
-  is_deeply $result->{view}[0]{pending_invites}, [],
+  is $result->{view}[0]{pending_invites}, [],
     'reactivated authoritative channels clear pre-delete pending invites';
   ok $result->{view}[0]{admission}{member},  'retained members remain authoritative members after UNDELETE';
   ok $result->{view}[0]{admission}{allowed}, 'retained members may JOIN again after UNDELETE';

@@ -1030,6 +1030,13 @@ sub _authoritative_channel_context {
     return (undef, $actor_error);
   }
 
+  my $group_ref = _nip29_group_ref(
+    group_id             => $group_id,
+    session_config       => $session_config,
+    authoritative_events => $events,
+    actor_pubkey         => $args->{actor_pubkey},
+  );
+
   return (
     {
       session_config       => $session_config,
@@ -1037,7 +1044,7 @@ sub _authoritative_channel_context {
       target               => $args->{target},
       group_host           => $group_host,
       group_id             => $group_id,
-      group_ref            => Net::Nostr::Group->format_id(host => $group_host, group_id => $group_id,),
+      group_ref            => $group_ref,
       authoritative_events => $events,
     },
     undef,
@@ -1052,6 +1059,86 @@ sub _authoritative_events_error {
   }
 
   return 'authoritative_events must be an array';
+}
+
+sub _nip29_group_ref {
+  my (%args) = @_;
+  my $pubkey = _nip29_group_ref_pubkey(%args);
+  if (!defined $pubkey) {
+    return;
+  }
+
+  return Net::Nostr::Group->format_id(
+    pubkey   => $pubkey,
+    group_id => $args{group_id},
+  );
+}
+
+sub _nip29_group_ref_pubkey {
+  my (%args) = @_;
+  my $session_config = $args{session_config} || {};
+
+  if (_valid_hex_pubkey($session_config->{group_pubkey})) {
+    return $session_config->{group_pubkey};
+  }
+
+  if (ref($args{authoritative_events}) eq 'ARRAY') {
+    for my $event (@{$args{authoritative_events}}) {
+      if (my $pubkey = _nip29_group_ref_pubkey_from_event($event, $args{group_id})) {
+        return $pubkey;
+      }
+    }
+  }
+
+  if (_valid_hex_pubkey($args{actor_pubkey})) {
+    return $args{actor_pubkey};
+  }
+
+  return;
+}
+
+sub _nip29_group_ref_pubkey_from_event {
+  my ($event, $group_id) = @_;
+  if (!(ref($event) eq 'HASH')) {
+    return;
+  }
+  if (
+    !(
+      defined($event->{kind}) && ($event->{kind} == 39_000
+        || $event->{kind} == 39_001
+        || $event->{kind} == 39_002
+        || $event->{kind} == 39_003
+        || $event->{kind} == 9_002)
+    )
+  ) {
+    return;
+  }
+  if (!(_valid_hex_pubkey($event->{pubkey}))) {
+    return;
+  }
+  my $event_group_id = _event_hash_group_id($event);
+  if (!(defined($event_group_id) && defined($group_id) && $event_group_id eq $group_id)) {
+    return;
+  }
+
+  return $event->{pubkey};
+}
+
+sub _event_hash_group_id {
+  my ($event) = @_;
+  my $d_tag;
+  for my $tag (@{$event->{tags} || []}) {
+    if (ref($tag) ne 'ARRAY' || @{$tag} < 2) {
+      next;
+    }
+    if (($tag->[0] || q{}) eq 'h') {
+      return $tag->[1];
+    }
+    if (($tag->[0] || q{}) eq 'd') {
+      $d_tag //= $tag->[1];
+    }
+  }
+  return $d_tag;
 }
 
 sub _optional_authoritative_actor_error {
