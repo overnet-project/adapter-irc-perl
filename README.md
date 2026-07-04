@@ -51,3 +51,7 @@ prove -v t/
 - [core-perl](https://github.com/overnet-project/core-perl)
 - [relay-perl](https://github.com/overnet-project/relay-perl)
 - [irc-server](https://github.com/overnet-project/irc-server)
+
+## AI Usage
+
+This code was developed in part with AI tooling such as Claude Code and Codex. We want to be upfront about that.
