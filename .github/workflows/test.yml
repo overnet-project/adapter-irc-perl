@@ -7,7 +7,6 @@ on:
       - '.github/workflows/test.yml'
       - '.perlcriticrc'
       - '.perltidyrc'
-      - 'cpanfile'
       - 'lib/**'
       - 'Makefile.PL'
       - 't/**'
@@ -18,7 +17,6 @@ on:
       - '.github/workflows/test.yml'
       - '.perlcriticrc'
       - '.perltidyrc'
-      - 'cpanfile'
       - 'lib/**'
       - 'Makefile.PL'
       - 't/**'
@@ -62,7 +60,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/perl5
-          key: perl-${{ matrix.perl }}-${{ hashFiles('adapter-irc-perl/cpanfile', 'adapter-irc-perl/Makefile.PL', 'adapter-irc-perl/.github/workflows/test.yml') }}
+          key: perl-${{ matrix.perl }}-${{ hashFiles('adapter-irc-perl/Makefile.PL', 'adapter-irc-perl/.github/workflows/test.yml') }}
 
       - name: Install dependencies
         run: |

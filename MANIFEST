@@ -1,6 +1,5 @@
 .gitignore
 CLAUDE.md
-cpanfile
 lib/Overnet/Adapter/IRC.pm
 LICENSE
 Makefile.PL
