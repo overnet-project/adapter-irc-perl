@@ -2146,4 +2146,888 @@ subtest
     'reactivated authoritative channels do not report a join denial reason for retained members';
   };
 
+subtest 'authoritative MODE list modes map exception, invite-exception, key, and limit metadata edits' => sub {
+  my %mode_input = (
+    session_config => _authority_config(),
+    command        => 'MODE',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    created_at     => 1_744_302_000,
+  );
+
+  my $add_exception = $adapter->map_input(%mode_input, mode => '+e', exception_mask => '*!*@good.example',);
+  ok $add_exception->{valid}, 'authoritative MODE +e is accepted';
+  is $add_exception->{event}{kind}, 9002, 'authoritative MODE +e emits kind 9002';
+  is(
+    $add_exception->{event}{tags},
+    [['h', 'overnet'], ['except', '*!*@good.example'],],
+    'authoritative MODE +e appends the IRC ban-exception mask',
+  );
+
+  my $remove_exception = $adapter->map_input(
+    %mode_input,
+    mode           => '-e',
+    exception_mask => '*!*@good.example',
+    group_metadata => {exception_masks => ['*!*@good.example', '*!*@kept.example'],},
+  );
+  ok $remove_exception->{valid}, 'authoritative MODE -e is accepted';
+  is(
+    $remove_exception->{event}{tags},
+    [['h', 'overnet'], ['except', '*!*@kept.example'],],
+    'authoritative MODE -e removes only the targeted IRC ban-exception mask',
+  );
+
+  my $add_invite_exception =
+    $adapter->map_input(%mode_input, mode => '+I', invite_exception_mask => '*!*@vip.example',);
+  ok $add_invite_exception->{valid}, 'authoritative MODE +I is accepted';
+  is(
+    $add_invite_exception->{event}{tags},
+    [['h', 'overnet'], ['invite-except', '*!*@vip.example'],],
+    'authoritative MODE +I appends the IRC invite-exception mask',
+  );
+
+  my $set_key = $adapter->map_input(%mode_input, mode => '+k', channel_key => 'sekrit',);
+  ok $set_key->{valid}, 'authoritative MODE +k is accepted';
+  is(
+    $set_key->{event}{tags},
+    [['h', 'overnet'], ['key', 'sekrit'],],
+    'authoritative MODE +k records the channel key metadata tag',
+  );
+
+  my $clear_key = $adapter->map_input(%mode_input, mode => '-k', group_metadata => {channel_key => 'sekrit',},);
+  ok $clear_key->{valid}, 'authoritative MODE -k is accepted';
+  is(
+    $clear_key->{event}{tags},
+    [['h', 'overnet'],],
+    'authoritative MODE -k drops the channel key metadata tag',
+  );
+
+  my $set_limit = $adapter->map_input(%mode_input, mode => '+l', user_limit => '25',);
+  ok $set_limit->{valid}, 'authoritative MODE +l is accepted';
+  is(
+    $set_limit->{event}{tags},
+    [['h', 'overnet'], ['limit', 25],],
+    'authoritative MODE +l records the numeric user limit metadata tag',
+  );
+
+  my $clear_limit = $adapter->map_input(%mode_input, mode => '-l', group_metadata => {user_limit => 25,},);
+  ok $clear_limit->{valid}, 'authoritative MODE -l is accepted';
+  is(
+    $clear_limit->{event}{tags},
+    [['h', 'overnet'],],
+    'authoritative MODE -l drops the user limit metadata tag',
+  );
+};
+
+subtest 'authoritative MODE closed and topic-restricted toggles map to NIP-29 metadata flags' => sub {
+  my %mode_input = (
+    session_config => _authority_config(),
+    command        => 'MODE',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    created_at     => 1_744_302_010,
+  );
+
+  my $set_closed = $adapter->map_input(%mode_input, mode => '+i',);
+  ok $set_closed->{valid}, 'authoritative MODE +i is accepted';
+  is(
+    $set_closed->{event}{tags},
+    [['h', 'overnet'], ['closed'],],
+    'authoritative MODE +i sets the NIP-29 closed metadata flag',
+  );
+
+  my $clear_closed = $adapter->map_input(
+    %mode_input,
+    mode           => '-i',
+    group_metadata => {
+      closed => 1,
+      topic  => undef,
+    },
+  );
+  ok $clear_closed->{valid}, 'authoritative MODE -i is accepted';
+  is(
+    $clear_closed->{event}{tags},
+    [['h', 'overnet'],],
+    'authoritative MODE -i clears the closed flag without inventing topic metadata',
+  );
+
+  my $set_topic_restricted = $adapter->map_input(%mode_input, mode => '+t',);
+  ok $set_topic_restricted->{valid}, 'authoritative MODE +t is accepted';
+  is(
+    $set_topic_restricted->{event}{tags},
+    [['h', 'overnet'], ['mode', 'topic-restricted'],],
+    'authoritative MODE +t adds the topic-restricted mode tag',
+  );
+
+  my $clear_topic_restricted =
+    $adapter->map_input(%mode_input, mode => '-t', group_metadata => {topic_restricted => 1,},);
+  ok $clear_topic_restricted->{valid}, 'authoritative MODE -t is accepted';
+  is(
+    $clear_topic_restricted->{event}{tags},
+    [['h', 'overnet'],],
+    'authoritative MODE -t removes the topic-restricted mode tag',
+  );
+
+  my $clear_moderated = $adapter->map_input(%mode_input, mode => '-m', group_metadata => {moderated => 1,},);
+  ok $clear_moderated->{valid}, 'authoritative MODE -m is accepted';
+  is(
+    $clear_moderated->{event}{tags},
+    [['h', 'overnet'],],
+    'authoritative MODE -m removes the moderated mode tag',
+  );
+};
+
+subtest 'authoritative MODE -v removes the voice role through the NIP-29 member surface' => sub {
+  my $result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'MODE',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    mode           => '-v',
+    target_pubkey  => 'b' x 64,
+    current_roles  => ['irc.operator', 'irc.voice'],
+    created_at     => 1_744_302_020,
+  );
+
+  ok $result->{valid}, 'authoritative MODE -v is accepted';
+  is $result->{event}{kind}, 9000, 'authoritative MODE -v emits kind 9000';
+  is(
+    $result->{event}{tags},
+    [['h', 'overnet'], ['p', 'b' x 64, 'irc.operator'],],
+    'authoritative MODE -v removes only the voice role from the NIP-29 member tag',
+  );
+};
+
+subtest 'authoritative KICK, PART, and INVITE reasons are optional or carried faithfully' => sub {
+  my %base_input = (
+    session_config => _authority_config(),
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    created_at     => 1_744_302_030,
+  );
+
+  my $kick = $adapter->map_input(%base_input, command => 'KICK', target_nick => 'bob', target_pubkey => 'b' x 64,);
+  ok $kick->{valid}, 'authoritative KICK without a reason is accepted';
+  is $kick->{event}{content}, '', 'authoritative KICK without a reason uses empty content';
+
+  my $part = $adapter->map_input(%base_input, command => 'PART',);
+  ok $part->{valid}, 'authoritative PART without a reason is accepted';
+  is $part->{event}{content}, '', 'authoritative PART without a reason uses empty content';
+
+  my $invite = $adapter->map_input(
+    %base_input,
+    command       => 'INVITE',
+    target_pubkey => 'b' x 64,
+    invite_code   => 'invite-bob',
+    text          => 'welcome aboard',
+  );
+  ok $invite->{valid}, 'authoritative INVITE with a reason is accepted';
+  is $invite->{event}{content}, 'welcome aboard', 'authoritative INVITE carries the reason in content';
+};
+
+subtest 'authoritative JOIN carries the observed IRC mask and join reason' => sub {
+  my $result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'JOIN',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    actor_mask     => 'alice!a@127.0.0.1',
+    invite_code    => 'invite-alice',
+    text           => 'requesting entry',
+    created_at     => 1_744_302_040,
+  );
+
+  ok $result->{valid}, 'authoritative JOIN with mask and reason is accepted';
+  is $result->{event}{kind},    9021,               'authoritative JOIN emits a NIP-29 join request';
+  is $result->{event}{content}, 'requesting entry', 'authoritative JOIN carries the reason in content';
+  is(
+    $result->{event}{tags},
+    [['h', 'overnet'], ['code', 'invite-alice'], ['overnet_irc_mask', 'alice!a@127.0.0.1'],],
+    'authoritative JOIN discloses the adapter-observed IRC mask for ban evaluation',
+  );
+};
+
+subtest 'authoritative JOIN with create_channel bootstraps group metadata and operator membership' => sub {
+  my $defaulted = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'JOIN',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    create_channel => 1,
+    created_at     => 1_744_302_050,
+  );
+
+  ok $defaulted->{valid}, 'authoritative channel-creating JOIN is accepted without group_metadata';
+  is scalar @{$defaulted->{events}}, 3, 'channel-creating JOIN emits metadata, membership, and join events';
+  is $defaulted->{events}[0]{kind}, 39_000, 'the bootstrap metadata event is kind 39000';
+  is(
+    $defaulted->{events}[0]{tags},
+    [['d', 'overnet'], ['name', '#overnet'],],
+    'the bootstrap metadata name defaults to the IRC channel target',
+  );
+  is $defaulted->{events}[1]{kind}, 9000, 'the bootstrap membership event is kind 9000';
+  is(
+    $defaulted->{events}[1]{tags},
+    [['h', 'overnet'], ['p', 'a' x 64, 'irc.operator'],],
+    'the creating actor is granted irc.operator on the new channel',
+  );
+  is $defaulted->{events}[2]{kind}, 9021, 'the trailing event remains the join request';
+
+  my $described = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'JOIN',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    create_channel => 1,
+    group_metadata => {
+      name       => 'Overnet HQ',
+      picture    => 'https://pic.example/overnet.png',
+      about      => 'Overnet coordination channel',
+      private    => 1,
+      closed     => 1,
+      restricted => 1,
+      hidden     => 1,
+    },
+    created_at => 1_744_302_051,
+  );
+
+  ok $described->{valid}, 'authoritative channel-creating JOIN accepts caller-supplied group metadata';
+  is(
+    $described->{events}[0]{tags},
+    [
+      ['d',       'overnet'],
+      ['name',    'Overnet HQ'],
+      ['picture', 'https://pic.example/overnet.png'],
+      ['about',   'Overnet coordination channel'],
+      ['private'], ['restricted'], ['hidden'], ['closed'],
+    ],
+    'caller-supplied metadata descriptors and flags are preserved on the bootstrap event',
+  );
+};
+
+subtest 'authoritative channel state projects full IRC-facing metadata from a NIP-29 snapshot' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_000,
+    name       => 'Overnet',
+    picture    => 'https://pic.example/overnet.png',
+    about      => 'Overnet coordination channel',
+    private    => 1,
+    restricted => 1,
+    hidden     => 1,
+    closed     => 1,
+  )->to_hash;
+  push @{$metadata->{tags}},
+    ['mode'],
+    ['topic'],
+    ['ban'],
+    ['except'],
+    ['invite-except'],
+    ['key'],
+    ['limit'],
+    ['status', 'active'],
+    ['ban',    ''],
+    ['ban',    '*!*@evil.example'],
+    ['except',        '*!*@good.example'],
+    ['invite-except', '*!*@vip.example'],
+    ['key',           'sekrit'],
+    ['limit',         '2'],
+    ['mode',          'topic-restricted'],
+    ['topic',         'Welcome to Overnet'];
+
+  my $ops = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'a' x 64,
+    created_at => 1_744_303_001,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $messy_roles = {
+    kind       => 9000,
+    pubkey     => 'f' x 64,
+    created_at => 1_744_303_002,
+    content    => '',
+    tags       => [['h', 'overnet'], ['p', 'b' x 64, 'irc.operator', 'irc.operator', '', 'zeta.role', 'alpha.role'],],
+  };
+
+  my $chatter = {
+    kind       => 1,
+    pubkey     => 'f' x 64,
+    created_at => 1_744_303_003,
+    content    => 'non-authoritative chatter',
+    tags       => [['h', 'overnet'],],
+  };
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_state',
+    session_config => {%{_authority_config()}, group_pubkey => 'c' x 64,},
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata, $ops, $messy_roles, $chatter,],
+    },
+  );
+
+  ok $result->{valid}, 'rich authoritative state derivation succeeds';
+  my $state = $result->{state}[0];
+  is $state->{group_ref}, _group_ref('c' x 64, 'overnet'),
+    'a configured group_pubkey pins the authoritative group ref';
+  is $state->{channel_modes}, '+iklnt', 'metadata flags and tags surface as IRC channel modes';
+  is $state->{ban_masks},              ['*!*@evil.example'], 'empty ban masks are normalized away';
+  is $state->{exception_masks},        ['*!*@good.example'], 'exception masks surface in channel state';
+  is $state->{invite_exception_masks}, ['*!*@vip.example'],  'invite-exception masks surface in channel state';
+  is $state->{channel_key},        'sekrit',            'the channel key surfaces in channel state';
+  is $state->{user_limit},         2,                   'the user limit surfaces as a number';
+  is $state->{topic},              'Welcome to Overnet', 'the last topic tag wins';
+  is $state->{topic_actor_pubkey}, 'f' x 64,            'the topic actor is the metadata event pubkey';
+  is(
+    $state->{members},
+    [
+      {
+        pubkey                => 'a' x 64,
+        roles                 => ['irc.operator'],
+        presentational_prefix => '@',
+      },
+      {
+        pubkey                => 'b' x 64,
+        roles                 => ['irc.operator', 'alpha.role', 'zeta.role'],
+        presentational_prefix => '@',
+      },
+    ],
+    'duplicate and empty role labels are normalized while unknown roles sort after IRC roles',
+  );
+};
+
+subtest 'authoritative channel state retains membership context for tombstoned channels' => sub {
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_010,
+    members    => ['a' x 64, 'b' x 64,],
+  )->to_hash;
+
+  my $ops = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'a' x 64,
+    created_at => 1_744_303_011,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $tombstoned = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_012,
+  )->to_hash;
+  push @{$tombstoned->{tags}}, ['status', 'tombstoned'];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_state',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$members, $ops, $tombstoned,],
+    },
+  );
+
+  ok $result->{valid}, 'tombstoned authoritative state derivation succeeds';
+  my $state = $result->{state}[0];
+  is $state->{tombstoned}, JSON::true, 'the tombstoned flag surfaces in channel state';
+  is $state->{members}, [], 'tombstoned channels expose no live members';
+  is(
+    $state->{retained_members},
+    [
+      {
+        pubkey                => 'a' x 64,
+        roles                 => ['irc.operator'],
+        presentational_prefix => '@',
+      },
+      {
+        pubkey                => 'b' x 64,
+        roles                 => [],
+        presentational_prefix => '',
+      },
+    ],
+    'tombstoned channels retain durable membership for potential UNDELETE',
+  );
+};
+
+subtest 'a 9002 metadata edit acts as an authoritative snapshot input' => sub {
+  my $edit = Net::Nostr::Group->edit_metadata(
+    pubkey     => 'e' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_020,
+    closed     => 1,
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$edit,],
+    },
+  );
+
+  ok $result->{valid}, 'a 9002 edit-metadata snapshot derives a view';
+  is $result->{view}[0]{group_ref}, _group_ref('e' x 64, 'overnet'),
+    'the group ref is recovered from the h-tagged 9002 event pubkey';
+  is $result->{view}[0]{channel_modes}, '+in', 'the 9002 closed flag maps to IRC +i';
+};
+
+subtest 'authoritative join admission without an authenticated actor reflects channel-level state' => sub {
+  my $open_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_030,
+  )->to_hash;
+
+  my $open = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$open_metadata,],
+    },
+  );
+  ok $open->{valid}, 'anonymous admission against an open channel derives';
+  is $open->{admission}[0]{allowed}, JSON::true, 'open channels admit anonymous joins';
+  is $open->{admission}[0]{reason},  '',         'open channel admission carries no denial reason';
+
+  my $closed_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_031,
+    closed     => 1,
+  )->to_hash;
+
+  my $closed = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$closed_metadata,],
+    },
+  );
+  ok $closed->{valid}, 'anonymous admission against a closed channel derives';
+  is $closed->{admission}[0]{allowed}, JSON::false, 'closed channels deny anonymous joins';
+  is $closed->{admission}[0]{reason},  '+i',        'closed channel denial uses the symbolic +i reason';
+
+  my $tombstoned_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_032,
+  )->to_hash;
+  push @{$tombstoned_metadata->{tags}}, ['status', 'tombstoned'];
+
+  my $deleted = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$tombstoned_metadata,],
+    },
+  );
+  ok $deleted->{valid}, 'anonymous admission against a tombstoned channel derives';
+  is $deleted->{admission}[0]{allowed}, JSON::false, 'tombstoned channels deny anonymous joins';
+  is $deleted->{admission}[0]{reason},  'deleted',   'tombstoned channel denial reports deletion';
+  is $deleted->{admission}[0]{deleted}, JSON::true,  'tombstoned channel admission marks the channel deleted';
+};
+
+subtest 'authoritative join admission reflects membership, pending requests, and invite targeting' => sub {
+  my $open_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_040,
+  )->to_hash;
+  push @{$open_metadata->{tags}}, ['ban', '*!*@evil.example'];
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_041,
+    members    => ['a' x 64,],
+  )->to_hash;
+
+  my $member_join = Net::Nostr::Group->join_request(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_042,
+  )->to_hash;
+
+  my $stranger_join = Net::Nostr::Group->join_request(
+    pubkey     => 'd' x 64,
+    group_id   => 'overnet',
+    code       => 'no-such-code',
+    created_at => 1_744_303_043,
+  )->to_hash;
+
+  my @open_events = ($open_metadata, $members, $member_join, $stranger_join,);
+
+  my $member_admission = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [@open_events],
+      actor_pubkey         => 'a' x 64,
+    },
+  );
+  ok $member_admission->{valid}, 'member admission derives';
+  is $member_admission->{admission}[0]{allowed}, JSON::true, 'current members are admitted';
+  is $member_admission->{admission}[0]{member},  JSON::true, 'current members are reported as members';
+  is $member_admission->{admission}[0]{present}, JSON::true, 'joined members are reported as present';
+
+  my $stranger_view = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [@open_events],
+    },
+  );
+  ok $stranger_view->{valid}, 'open channel view derives';
+  is [map { $_->{pubkey} } @{$stranger_view->{view}[0]{members}}], ['a' x 64, 'd' x 64,],
+    'an unknown invite code still admits joiners to an open channel';
+
+  my $unbanned_admission = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [@open_events],
+      actor_pubkey         => '1' x 64,
+      actor_mask           => 'good!g@friendly.example',
+    },
+  );
+  ok $unbanned_admission->{valid}, 'non-matching ban mask admission derives';
+  is $unbanned_admission->{admission}[0]{allowed}, JSON::true, 'a non-matching mask is not treated as banned';
+  is $unbanned_admission->{admission}[0]{reason},  '',         'non-matching masks carry no denial reason';
+
+  my $keyed_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_050,
+  )->to_hash;
+  push @{$keyed_metadata->{tags}}, ['key', 'sekrit'];
+
+  my $keyed_admission = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$keyed_metadata,],
+      actor_pubkey         => '2' x 64,
+      join_key             => 'sekrit',
+    },
+  );
+  ok $keyed_admission->{valid}, 'matching join key admission derives';
+  is $keyed_admission->{admission}[0]{allowed}, JSON::true, 'a matching join key satisfies +k';
+  is $keyed_admission->{admission}[0]{reason},  '',         'matching join keys carry no denial reason';
+
+  my $restricted_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_060,
+    closed     => 1,
+    restricted => 1,
+  )->to_hash;
+
+  my $pending_join = Net::Nostr::Group->join_request(
+    pubkey     => '3' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_061,
+  )->to_hash;
+
+  my $pending_admission = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$restricted_metadata, $pending_join,],
+      actor_pubkey         => '3' x 64,
+    },
+  );
+  ok $pending_admission->{valid}, 'pending join request admission derives';
+  is $pending_admission->{admission}[0]{allowed}, JSON::false, 'pending requesters are not yet admitted';
+  is $pending_admission->{admission}[0]{reason}, 'join_request_pending',
+    'pending requesters see the pending symbolic reason';
+  is $pending_admission->{admission}[0]{pending_request}, JSON::true,
+    'pending requesters see their request-in-flight marker';
+
+  my $fresh_admission = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$restricted_metadata, $pending_join,],
+      actor_pubkey         => '4' x 64,
+    },
+  );
+  ok $fresh_admission->{valid}, 'request-mediated admission derives';
+  is $fresh_admission->{admission}[0]{reason}, 'join_request',
+    'closed restricted channels steer new actors to a join request';
+  is $fresh_admission->{admission}[0]{request_join}, JSON::true,
+    'closed restricted channels mark JOIN as request-mediated';
+
+  my $closed_metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_070,
+    closed     => 1,
+  )->to_hash;
+
+  my $invite = Net::Nostr::Group->create_invite(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_303_071,
+  )->to_hash;
+  push @{$invite->{tags}}, ['p', 'b' x 64];
+
+  my $mismatched_join = Net::Nostr::Group->join_request(
+    pubkey     => '5' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_303_072,
+  )->to_hash;
+
+  my $mismatch_view = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$closed_metadata, $invite, $mismatched_join,],
+    },
+  );
+  ok $mismatch_view->{valid}, 'targeted invite mismatch view derives';
+  is $mismatch_view->{view}[0]{members}, [],
+    'a join request cannot consume an invite targeted at a different pubkey';
+
+  my $mismatch_admission = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$closed_metadata, $invite, $mismatched_join,],
+      actor_pubkey         => '5' x 64,
+    },
+  );
+  ok $mismatch_admission->{valid}, 'targeted invite mismatch admission derives';
+  is $mismatch_admission->{admission}[0]{allowed}, JSON::false,
+    'an invite targeted at another pubkey does not admit the requester';
+  is $mismatch_admission->{admission}[0]{reason}, '+i', 'the mismatched requester still sees the +i denial';
+};
+
+subtest 'authoritative permissions deny actions on tombstoned channels with symbolic reasons' => sub {
+  my $live_members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_080,
+    members    => ['a' x 64, 'b' x 64,],
+  )->to_hash;
+
+  my $live_ops = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'a' x 64,
+    created_at => 1_744_303_081,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $tombstoned = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_082,
+  )->to_hash;
+  push @{$tombstoned->{tags}}, ['status', 'tombstoned'];
+
+  my %deleted_input = (
+    network              => 'irc.example.test',
+    target               => '#overnet',
+    authoritative_events => [$live_members, $live_ops, $tombstoned,],
+    actor_pubkey         => 'a' x 64,
+  );
+
+  my $speak = $adapter->derive(
+    operation      => 'authoritative_speak_permission',
+    session_config => _authority_config(),
+    input          => {%deleted_input},
+  );
+  ok $speak->{valid}, 'speak permission derivation succeeds for tombstoned channels';
+  is $speak->{permission}[0]{allowed}, JSON::false, 'tombstoned channels deny speaking';
+  is $speak->{permission}[0]{reason},  'deleted',   'tombstoned speak denial reports deletion';
+
+  my $topic = $adapter->derive(
+    operation      => 'authoritative_topic_permission',
+    session_config => _authority_config(),
+    input          => {%deleted_input},
+  );
+  ok $topic->{valid}, 'topic permission derivation succeeds for tombstoned channels';
+  is $topic->{permission}[0]{allowed}, JSON::false, 'tombstoned channels deny topic changes';
+  is $topic->{permission}[0]{reason},  'deleted',   'tombstoned topic denial reports deletion';
+
+  my $mode_write = $adapter->derive(
+    operation      => 'authoritative_mode_write_permission',
+    session_config => _authority_config(),
+    input          => {%deleted_input, mode => '+m', mode_args => [],},
+  );
+  ok $mode_write->{valid}, 'mode write permission derivation succeeds for tombstoned channels';
+  is $mode_write->{permission}[0]{allowed}, JSON::false, 'tombstoned channels deny mode writes';
+  is $mode_write->{permission}[0]{reason},  'deleted',   'tombstoned mode write denial reports deletion';
+
+  my $action = $adapter->derive(
+    operation      => 'authoritative_channel_action_permission',
+    session_config => _authority_config(),
+    input          => {%deleted_input, action => 'kick', target_pubkey => 'b' x 64,},
+  );
+  ok $action->{valid}, 'channel action permission derivation succeeds for tombstoned channels';
+  is $action->{permission}[0]{allowed}, JSON::false, 'tombstoned channels deny live channel actions';
+  is $action->{permission}[0]{reason},  'deleted',   'tombstoned action denial reports deletion';
+
+  my $retained_non_operator = $adapter->derive(
+    operation      => 'authoritative_channel_action_permission',
+    session_config => _authority_config(),
+    input          => {%deleted_input, actor_pubkey => 'b' x 64, action => 'undelete',},
+  );
+  ok $retained_non_operator->{valid}, 'undelete permission derivation succeeds for retained non-operators';
+  is $retained_non_operator->{permission}[0]{allowed}, JSON::false,
+    'retained non-operators may not undelete the channel';
+  is $retained_non_operator->{permission}[0]{reason}, 'not_operator',
+    'the undelete denial reports the missing operator role';
+
+  my %live_input = (
+    network              => 'irc.example.test',
+    target               => '#overnet',
+    authoritative_events => [$live_members, $live_ops,],
+    actor_pubkey         => 'a' x 64,
+  );
+
+  my $not_deleted = $adapter->derive(
+    operation      => 'authoritative_channel_action_permission',
+    session_config => _authority_config(),
+    input          => {%live_input, action => 'undelete',},
+  );
+  ok $not_deleted->{valid}, 'undelete permission derivation succeeds for live channels';
+  is $not_deleted->{permission}[0]{allowed}, JSON::false, 'live channels cannot be undeleted';
+  is $not_deleted->{permission}[0]{reason},  'not_deleted', 'the live undelete denial reports not_deleted';
+
+  my $delete = $adapter->derive(
+    operation      => 'authoritative_channel_action_permission',
+    session_config => _authority_config(),
+    input          => {%live_input, action => 'delete',},
+  );
+  ok $delete->{valid}, 'delete permission derivation succeeds for live operators';
+  is $delete->{permission}[0]{allowed}, JSON::true, 'live operators may delete the channel';
+  is ref($delete->{permission}[0]{group_metadata}), 'HASH',
+    'delete permission exposes the retained metadata context for the tombstone edit';
+};
+
+subtest 'authoritative mode write permission exposes rich group metadata context' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_303_090,
+    private    => 1,
+    restricted => 1,
+    hidden     => 1,
+  )->to_hash;
+  push @{$metadata->{tags}},
+    ['except',        '*!*@good.example'],
+    ['invite-except', '*!*@vip.example'],
+    ['key',           'sekrit'],
+    ['limit',         '25'],
+    ['topic',         'Welcome to Overnet'];
+
+  my $ops = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'a' x 64,
+    created_at => 1_744_303_091,
+    roles      => ['irc.operator'],
+  )->to_hash;
+
+  my $moderated = $adapter->derive(
+    operation      => 'authoritative_mode_write_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata, $ops,],
+      actor_pubkey         => 'a' x 64,
+      mode                 => '+m',
+      mode_args            => [],
+    },
+  );
+
+  ok $moderated->{valid}, 'state mode write permission derivation succeeds for operators';
+  is $moderated->{permission}[0]{allowed}, JSON::true, 'operators may write +m';
+  is(
+    $moderated->{permission}[0]{group_metadata},
+    {
+      closed                 => 0,
+      moderated              => 0,
+      topic_restricted       => 0,
+      private                => 1,
+      restricted             => 1,
+      hidden                 => 1,
+      ban_masks              => [],
+      exception_masks        => ['*!*@good.example'],
+      invite_exception_masks => ['*!*@vip.example'],
+      channel_key            => 'sekrit',
+      user_limit             => 25,
+      topic                  => 'Welcome to Overnet',
+      tombstoned             => 0,
+    },
+    'the mode write context carries the complete current authoritative metadata',
+  );
+
+  my $unknown_target = $adapter->derive(
+    operation      => 'authoritative_mode_write_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata, $ops,],
+      actor_pubkey         => 'a' x 64,
+      mode                 => '+o',
+      mode_args            => ['6' x 64,],
+    },
+  );
+
+  ok $unknown_target->{valid}, 'role mode write permission derivation succeeds for unknown targets';
+  is $unknown_target->{permission}[0]{allowed},       JSON::true, 'operators may write role modes';
+  is $unknown_target->{permission}[0]{current_roles}, [],
+    'role mode writes report empty current roles for non-members';
+};
+
 done_testing;

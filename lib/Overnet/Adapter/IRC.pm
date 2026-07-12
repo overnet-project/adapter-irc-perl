@@ -2235,7 +2235,7 @@ sub _authoritative_permission_view {
 
   my $view_result = $self->derive_authoritative_channel_view(%args);
   if (!$view_result->{valid}) {
-    return (undef, undef, undef, $view_result->{error});
+    return (undef, undef, undef, $view_result->{reason});
   }
   my $view = $view_result->{view}[0];
   if (ref($view) ne 'HASH') {
