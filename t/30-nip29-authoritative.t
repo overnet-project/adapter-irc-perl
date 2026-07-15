@@ -3030,4 +3030,655 @@ subtest 'authoritative mode write permission exposes rich group metadata context
     'role mode writes report empty current roles for non-members';
 };
 
+subtest 'authoritative group ref is derived from a lone kind 39002 members snapshot' => sub {
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_700_000,
+    members    => ['a' x 64],
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$members],
+    },
+  );
+
+  ok $result->{valid}, 'a lone members snapshot yields a valid channel view';
+  is $result->{view}[0]{group_ref}, _group_ref('f' x 64, 'overnet'),
+    'a kind 39002 members event supplies the authoritative group ref pubkey';
+};
+
+subtest 'authoritative admission does not mark an absent member as present' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_700_010,
+  )->to_hash;
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_700_011,
+    members    => ['a' x 64, 'c' x 64],
+  )->to_hash;
+  my $join_a = Net::Nostr::Group->join_request(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_700_012,
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      actor_pubkey         => 'c' x 64,
+      authoritative_events => [$metadata, $members, $join_a],
+    },
+  );
+
+  ok $result->{valid}, 'join admission derivation succeeds';
+  ok $result->{admission}[0]{member},   'actor c is a known member';
+  ok !$result->{admission}[0]{present}, 'actor c is absent even though another member is present';
+};
+
+subtest 'a banned actor in a closed restricted channel is not offered a join request' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_700_020,
+    closed     => 1,
+    restricted => 1,
+  )->to_hash;
+  push @{$metadata->{tags}}, ['ban', 'evil!evil@bad'];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      actor_pubkey         => 'd' x 64,
+      actor_mask           => 'evil!evil@bad',
+      authoritative_events => [$metadata],
+    },
+  );
+
+  ok $result->{valid}, 'join admission derivation succeeds for a banned actor';
+  is $result->{admission}[0]{reason}, '+b', 'the banned actor is denied with the ban reason';
+  ok !$result->{admission}[0]{request_join},
+    'a banned actor is not additionally offered a join request';
+};
+
+subtest 'an existing member is not offered a redundant join request' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_700_030,
+    closed     => 1,
+    restricted => 1,
+  )->to_hash;
+  my $put = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'a' x 64,
+    created_at => 1_744_700_031,
+    roles      => [],
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      actor_pubkey         => 'a' x 64,
+      authoritative_events => [$metadata, $put],
+    },
+  );
+
+  ok $result->{valid}, 'join admission derivation succeeds for an existing member';
+  ok $result->{admission}[0]{member}, 'the actor is recognised as a member';
+  ok !$result->{admission}[0]{request_join},
+    'an existing member is not additionally offered a join request';
+};
+
+subtest 'a create-invite event without a p tag records no invite target' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_700_040,
+    closed     => 1,
+  )->to_hash;
+  my $invite = Net::Nostr::Group->create_invite(
+    pubkey     => 'a' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-nop',
+    created_at => 1_744_700_041,
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata, $invite],
+    },
+  );
+
+  ok $result->{valid}, 'channel view derivation succeeds';
+  is $result->{view}[0]{pending_invites}, [{code => 'invite-nop'}],
+    'an invite without a p tag exposes only the code, never a synthetic target pubkey';
+};
+
+subtest 'irc.voice sorts ahead of custom roles by role rank, not by name' => sub {
+  my $put = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'b' x 64,
+    created_at => 1_744_700_050,
+    roles      => ['irc.voice', 'zzz.role'],
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_state',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$put],
+    },
+  );
+
+  ok $result->{valid}, 'channel state derivation succeeds';
+  my ($member) = grep { $_->{pubkey} eq 'b' x 64 } @{$result->{state}[0]{members}};
+  is $member->{roles}, ['irc.voice', 'zzz.role'],
+    'irc.voice (rank 1) precedes an unranked custom role (rank 2)';
+};
+
+# Authoritative-ordering fixtures: two conflicting role writes for member b, same
+# created_at, resolved by authority sequence / semantic phase.
+sub _ordering_put_user {
+  my (%o) = @_;
+  my $event = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'b' x 64,
+    created_at => $o{created_at},
+    roles      => ['irc.operator'],
+  )->to_hash;
+  push @{$event->{tags}}, @{$o{extra} || []};
+  return $event;
+}
+
+sub _ordering_admins {
+  my (%o) = @_;
+  my $event = Net::Nostr::Group->admins(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => $o{created_at},
+    members    => [{pubkey => 'b' x 64, roles => ['irc.voice']}],
+  )->to_hash;
+  push @{$event->{tags}}, @{$o{extra} || []};
+  return $event;
+}
+
+sub _ordering_roles_for_b {
+  my (@events) = @_;
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_state',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => \@events,
+    },
+  );
+  return (undef, $result->{reason}) unless $result->{valid};
+  my ($member) = grep { $_->{pubkey} eq 'b' x 64 } @{$result->{state}[0]{members}};
+  return ($member ? $member->{roles} : undef, undef);
+}
+
+subtest 'authority sequence tiebreak orders same-second role writes by sequence' => sub {
+  my $auth = '1' x 64;
+  my $put  = _ordering_put_user(
+    created_at => 1_744_700_100,
+    extra      => [['overnet_authority', $auth], ['overnet_sequence', '2']],
+  );
+  my $admins = _ordering_admins(
+    created_at => 1_744_700_100,
+    extra      => [['overnet_authority', $auth], ['overnet_sequence', '1']],
+  );
+
+  my ($roles, $reason) = _ordering_roles_for_b($put, $admins);
+  ok defined($roles), 'sequence-ordered derivation succeeds' or diag($reason);
+  is $roles, ['irc.operator'],
+    'the higher overnet_sequence write (put-user) is applied last within the same authority';
+};
+
+subtest 'semantic phase orders same-second role writes when no authority sequence applies' => sub {
+  my $put    = _ordering_put_user(created_at => 1_744_700_110);
+  my $admins = _ordering_admins(created_at => 1_744_700_110);
+
+  my ($roles, $reason) = _ordering_roles_for_b($put, $admins);
+  ok defined($roles), 'phase-ordered derivation succeeds' or diag($reason);
+  is $roles, ['irc.voice'],
+    'without an authority sequence the later semantic phase (admins) is applied last';
+};
+
+subtest 'overnet_sequence is read only from overnet_sequence tags with digit values' => sub {
+  my $auth = '1' x 64;
+  my $put  = _ordering_put_user(
+    created_at => 1_744_700_120,
+    extra      => [['overnet_authority', $auth], ['note', '9']],
+  );
+  my $admins = _ordering_admins(
+    created_at => 1_744_700_120,
+    extra      => [['overnet_authority', $auth], ['note', '5']],
+  );
+
+  my ($roles, $reason) = _ordering_roles_for_b($put, $admins);
+  ok defined($roles), 'derivation succeeds when no overnet_sequence tag is present' or diag($reason);
+  is $roles, ['irc.voice'],
+    'a non-overnet_sequence digit tag must not act as an authority sequence';
+};
+
+subtest 'a non-digit overnet_sequence value does not enable the sequence tiebreak' => sub {
+  my $auth = '1' x 64;
+  my $put  = _ordering_put_user(
+    created_at => 1_744_700_130,
+    extra      => [['overnet_authority', $auth], ['overnet_sequence', '9']],
+  );
+  my $admins = _ordering_admins(
+    created_at => 1_744_700_130,
+    extra      => [['overnet_authority', $auth], ['overnet_sequence', '2xyz']],
+  );
+
+  my ($roles, $reason) = _ordering_roles_for_b($put, $admins);
+  ok defined($roles), 'derivation succeeds despite a malformed sequence value' or diag($reason);
+  is $roles, ['irc.voice'],
+    'a malformed sequence value is treated as zero so the tiebreak stays disabled';
+};
+
+subtest 'fully-tied authoritative events fall back to a deterministic id order' => sub {
+  my $auth  = '1' x 64;
+  my $pu_op = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'b' x 64,
+    created_at => 1_744_700_140,
+    roles      => ['irc.operator'],
+  )->to_hash;
+  push @{$pu_op->{tags}}, ['overnet_authority', $auth], ['overnet_sequence', '5'];
+
+  my $pu_vo = Net::Nostr::Group->put_user(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    target     => 'b' x 64,
+    created_at => 1_744_700_140,
+    roles      => ['irc.voice'],
+  )->to_hash;
+  push @{$pu_vo->{tags}}, ['overnet_authority', $auth], ['overnet_sequence', '5'];
+
+  # Input order [operator, voice] but id(voice) < id(operator); the id tiebreak
+  # must order [voice, operator] so the operator write is applied last.
+  my ($roles, $reason) = _ordering_roles_for_b($pu_op, $pu_vo);
+  ok defined($roles), 'fully-tied derivation succeeds' or diag($reason);
+  is $roles, ['irc.operator'],
+    'events tied on created_at, sequence, and phase are ordered by lower-cased event id';
+};
+
+# --- batch-2 mutation kills ---------------------------------------------------
+
+# Derive a channel view for a set of raw authoritative events and return the
+# derived member/present pubkey initials (first character) as sorted strings.
+sub _view_member_initials {
+  my (@events) = @_;
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => \@events,
+    },
+  );
+  return (undef, undef, $result->{reason}) unless $result->{valid};
+  my $members = join(q{}, sort map { substr($_->{pubkey}, 0, 1) } @{$result->{view}[0]{members}});
+  my $present = join(q{}, sort map { substr($_->{pubkey}, 0, 1) } @{$result->{view}[0]{present_members}});
+  return ($members, $present, undef);
+}
+
+subtest 'a same-second members snapshot re-adds a member removed by a lower-phase removal' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_000,
+  )->to_hash;
+  my $members = Net::Nostr::Group->members(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_001, members => ['b' x 64],
+  )->to_hash;
+  my $remove = Net::Nostr::Group->remove_user(
+    pubkey => '1' x 64, group_id => 'overnet', target => 'b' x 64, created_at => 1_744_800_001,
+  )->to_hash;
+
+  my ($mem, undef, $reason) = _view_member_initials($metadata, $members, $remove);
+  ok defined($mem), 'derivation succeeds for same-second remove and members snapshot' or diag($reason);
+  is $mem, 'b',
+    'the phase-2 remove-user applies before the phase-3 members snapshot, so the snapshot re-adds b';
+};
+
+subtest 'a same-second members snapshot re-adds a member cleared by a lower-phase leave' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_010,
+  )->to_hash;
+  my $members = Net::Nostr::Group->members(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_011, members => ['b' x 64],
+  )->to_hash;
+  my $leave = Net::Nostr::Group->leave_request(
+    pubkey => 'b' x 64, group_id => 'overnet', created_at => 1_744_800_011,
+  )->to_hash;
+
+  my ($mem, undef, $reason) = _view_member_initials($metadata, $members, $leave);
+  ok defined($mem), 'derivation succeeds for same-second leave and members snapshot' or diag($reason);
+  is $mem, 'b',
+    'the phase-2 leave-request applies before the phase-3 members snapshot, so the snapshot re-adds b';
+};
+
+subtest 'a same-second metadata close applies before a join request in semantic phase order' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_020,
+  )->to_hash;
+  my $close = Net::Nostr::Group->edit_metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_021, closed => 1,
+  )->to_hash;
+  is $close->{kind}, 9002, 'edit_metadata produces a kind 9002 metadata edit';
+  my $join = Net::Nostr::Group->join_request(
+    pubkey => 'b' x 64, group_id => 'overnet', created_at => 1_744_800_021,
+  )->to_hash;
+
+  my ($mem, $present, $reason) = _view_member_initials($metadata, $close, $join);
+  ok defined($mem), 'derivation succeeds for same-second close and join' or diag($reason);
+  is $mem, q{},
+    'the phase-0 metadata close applies before the phase-1 join, so the join into the closed channel is dropped';
+  is $present, q{}, 'no presence results from a join dropped by the earlier close';
+};
+
+subtest 'same-second put and remove without authority tags order by semantic phase, not the h tag' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_030,
+  )->to_hash;
+  my $put = Net::Nostr::Group->put_user(
+    pubkey => 'f' x 64, group_id => 'overnet', target => 'b' x 64, created_at => 1_744_800_031, roles => [],
+  )->to_hash;
+  push @{$put->{tags}}, ['overnet_sequence', 5];
+  my $remove = Net::Nostr::Group->remove_user(
+    pubkey => 'f' x 64, group_id => 'overnet', target => 'b' x 64, created_at => 1_744_800_031,
+  )->to_hash;
+  push @{$remove->{tags}}, ['overnet_sequence', 2];
+
+  # Neither event carries an overnet_authority tag, so no authority sequence
+  # tiebreak applies and semantic phase decides: put-user (9000, phase 0) before
+  # remove-user (9001, phase 2). The h tag value must NOT be treated as the
+  # authority string, which would (wrongly) enable the sequence tiebreak.
+  my ($mem, undef, $reason) = _view_member_initials($metadata, $put, $remove);
+  ok defined($mem), 'derivation succeeds for same-second put and remove without authority tags' or diag($reason);
+  is $mem, q{},
+    'without an overnet_authority tag the remove (phase 2) still applies after the put (phase 0)';
+};
+
+subtest 'a closed but unrestricted channel records no pending join request' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_040, closed => 1,
+  )->to_hash;
+  my $join = Net::Nostr::Group->join_request(
+    pubkey => 'b' x 64, group_id => 'overnet', created_at => 1_744_800_041,
+  )->to_hash;
+  push @{$join->{tags}}, ['overnet_actor', 'b' x 64];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata, $join],
+    },
+  );
+  ok $result->{valid}, 'derivation succeeds for a closed unrestricted channel join';
+  is $result->{view}[0]{pending_join_requests}, [],
+    'a join into a closed but unrestricted channel is dropped without recording a pending request';
+};
+
+subtest 'a banned member is denied admission despite membership' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_050, closed => 1,
+  )->to_hash;
+  push @{$metadata->{tags}}, ['ban', 'bob!bob@127.0.0.1'];
+  my $members = Net::Nostr::Group->members(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_051, members => ['b' x 64],
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      actor_pubkey         => 'b' x 64,
+      actor_mask           => 'bob!bob@127.0.0.1',
+      authoritative_events => [$metadata, $members],
+    },
+  );
+  ok $result->{valid}, 'join admission derivation succeeds for a banned member';
+  ok $result->{admission}[0]{allowed}, 'membership admits the actor even though a ban mask matches (ban is only checked for non-members)';
+  is $result->{admission}[0]{reason}, q{}, 'the admitted member is given an empty admission reason';
+};
+
+subtest 'a closed unrestricted channel offers no symbolic join request' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_060, closed => 1,
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      actor_pubkey         => 'b' x 64,
+      actor_mask           => 'bob!bob@10.0.0.1',
+      authoritative_events => [$metadata],
+    },
+  );
+  ok $result->{valid}, 'join admission derivation succeeds for a closed unrestricted channel';
+  is $result->{admission}[0]{reason}, '+i', 'a closed unrestricted channel denies with the +i reason';
+  ok !$result->{admission}[0]{request_join},
+    'a closed but unrestricted channel offers no join request (a request needs closed AND restricted)';
+};
+
+subtest 'a channel key metadata edit with an empty value does not set +k' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_070,
+  )->to_hash;
+  push @{$metadata->{tags}}, ['key', ''];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata],
+    },
+  );
+  ok $result->{valid}, 'derivation succeeds for an empty channel key edit';
+  is $result->{view}[0]{channel_modes}, '+n',
+    'an empty channel_key value must not enable +k (the key must be defined AND non-empty)';
+};
+
+subtest 'a limit metadata edit with a non-integer value does not set +l' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey => 'f' x 64, group_id => 'overnet', created_at => 1_744_800_080,
+  )->to_hash;
+  push @{$metadata->{tags}}, ['limit', 'abc'];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata],
+    },
+  );
+  ok $result->{valid}, 'derivation succeeds for a non-integer limit edit';
+  is $result->{view}[0]{channel_modes}, '+n',
+    'a non-positive-integer limit value must not enable +l (the value must be a positive integer)';
+};
+
+subtest 'a duplicated d tag resolves the group id from the first d tag, not a later one' => sub {
+  my $config = {
+    authority_profile => 'nip29',
+    group_host        => 'groups.example.test',
+    channel_groups    => {'#zero' => '0'},
+  };
+  # Raw kind 39000 metadata event carrying two d tags; the first ('0') is the
+  # bound group id. group id resolution must keep the FIRST d tag (//=), so this
+  # event supplies the group ref pubkey. A later d tag must not override it.
+  my $metadata = {
+    kind       => 39_000,
+    pubkey     => 'f' x 64,
+    created_at => 1_744_800_090,
+    content    => '{}',
+    tags       => [['d', '0'], ['d', 'other-group'], ['name', '#zero']],
+  };
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_channel_view',
+    session_config => $config,
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#zero',
+      authoritative_events => [$metadata],
+    },
+  );
+  ok $result->{valid}, 'derivation succeeds when the metadata event has duplicate d tags';
+  is $result->{view}[0]{group_ref}, _group_ref('f' x 64, '0'),
+    'the first d tag (group id "0") resolves the group ref pubkey; a later d tag does not replace it';
+};
+
+subtest 'group ref resolution skips malformed single-element h tags' => sub {
+  my $group_id = Overnet::Authority::HostedChannel::authoritative_group_id(
+    network => 'irc.example.test',
+    channel => '#fresh',
+  );
+
+  my $metadata = {
+    kind       => 39_000,
+    pubkey     => 'a' x 64,
+    created_at => 1_744_301_000,
+    content    => q{},
+    id         => '0' x 64,
+    sig        => '0' x 128,
+    tags       => [['h'], ['h', $group_id], ['d', $group_id]],
+  };
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _dynamic_authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#fresh',
+      authoritative_events => [$metadata],
+    },
+  );
+
+  ok $result->{valid}, 'derivation succeeds despite a malformed leading h tag';
+  is $result->{admission}[0]{group_ref}, _group_ref('a' x 64, $group_id),
+    'a malformed single-element h tag is skipped so the real h tag still resolves the group ref';
+};
+
+subtest 'authoritative_speak_permission allows unprivileged members in unmoderated channels' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_040,
+  )->to_hash;
+
+  my $members = Net::Nostr::Group->members(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_041,
+    members    => ['c' x 64,],
+  )->to_hash;
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_speak_permission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata, $members],
+      actor_pubkey         => 'c' x 64,
+    },
+  );
+
+  ok $result->{valid}, 'speak permission derivation succeeds for an unmoderated channel';
+  is $result->{permission}[0]{allowed}, JSON::true,
+    'an unprivileged member may speak when the channel is not moderated';
+  is $result->{permission}[0]{reason}, q{},
+    'an unmoderated allow carries no +m denial reason';
+};
+
+subtest 'authoritative_join_admission does not offer request_join when the join key is wrong' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_040,
+    closed     => 1,
+    restricted => 1,
+  )->to_hash;
+  push @{$metadata->{tags}}, ['key', 'sekret'];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata],
+      actor_pubkey         => 'b' x 64,
+    },
+  );
+
+  ok $result->{valid}, 'join admission derivation succeeds for a bad-key actor';
+  is $result->{admission}[0]{reason}, '+k', 'a wrong/missing join key denies with a symbolic +k reason';
+  ok !exists $result->{admission}[0]{request_join},
+    'a bad key blocks the request_join affordance even in a closed restricted channel';
+};
+
+subtest 'authoritative metadata edit omits the key tag for an empty channel_key' => sub {
+  my $result = $adapter->map_input(
+    session_config => _authority_config(),
+    command        => 'MODE',
+    network        => 'irc.example.test',
+    target         => '#overnet',
+    nick           => 'alice',
+    actor_pubkey   => 'a' x 64,
+    mode           => '+m',
+    group_metadata => {channel_key => q{},},
+    created_at     => 1_744_301_002,
+  );
+
+  ok $result->{valid}, 'MODE edit carrying an empty channel_key is accepted';
+  my @key_tags = grep { $_->[0] eq 'key' } @{$result->{event}{tags}};
+  is scalar(@key_tags), 0,
+    'a defined but empty channel_key emits no key tag (defined-and-length guard, not defined-or-length)';
+};
+
 done_testing;

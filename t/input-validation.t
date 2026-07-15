@@ -1,5 +1,6 @@
 use strictures 2;
 
+use JSON ();
 use Test2::V0;
 
 use Net::Nostr::Group;
@@ -897,6 +898,56 @@ subtest 'authoritative snapshots with invalid event pubkeys are rejected, not tr
   ok !$result->{valid}, 'an authoritative event with an invalid pubkey is rejected';
   like $result->{reason}, qr/\Aauthoritative\sevents\smust\sbe\svalid\sNostr\sevents/msx,
     'the invalid pubkey is reported as an invalid authoritative event';
+};
+
+subtest 'an explicitly supplied overnet_version is preserved even when falsy' => sub {
+  my $versioned = Overnet::Adapter::IRC->new(overnet_version => '0');
+  my $result    = $versioned->map_input(
+    command    => 'PRIVMSG',
+    network    => 'irc.example.test',
+    target     => '#overnet',
+    nick       => 'alice',
+    text       => 'hi',
+    created_at => 10,
+  );
+
+  ok $result->{valid}, 'the message maps successfully';
+  my ($version_tag) = grep { $_->[0] eq 'overnet_v' } @{$result->{event}{tags}};
+  is $version_tag->[1], '0',
+    'a defined but falsy overnet_version is kept, not replaced with the default';
+};
+
+subtest 'a defined but falsy session_state is defaulted to an empty hashref' => sub {
+  my $adapter_zero = Overnet::Adapter::IRC->new(session_state => 0);
+  is ref($adapter_zero->session_state), 'HASH',
+    'session_state => 0 is coerced to an empty hashref, not kept as a falsy scalar';
+
+  my $opened = $adapter_zero->open_session(
+    adapter_session_id => 'session-falsy',
+    session_config     => {},
+  );
+  ok $opened, 'open_session works because the falsy session_state became a usable hashref';
+};
+
+subtest 'a non-authoritative KICK omits the reason body field for empty text' => sub {
+  my %kick = (
+    command     => 'KICK',
+    network     => 'irc.example.test',
+    target      => '#overnet',
+    nick        => 'alice',
+    target_nick => 'bob',
+    created_at  => 1_744_301_000,
+  );
+
+  my $empty = $adapter->map_input(%kick, text => q{});
+  ok $empty->{valid}, 'KICK with empty reason text is accepted';
+  my $empty_body = JSON::decode_json($empty->{event}{content})->{body};
+  ok !exists $empty_body->{reason},
+    'an empty reason text produces no reason field (defined-and-length guard, not defined-or-length)';
+
+  my $reasoned = $adapter->map_input(%kick, text => 'because');
+  my $reasoned_body = JSON::decode_json($reasoned->{event}{content})->{body};
+  is $reasoned_body->{reason}, 'because', 'a non-empty reason text is carried in the body';
 };
 
 done_testing;
