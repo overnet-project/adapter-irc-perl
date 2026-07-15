@@ -188,3 +188,9 @@
 # sort key built in _sorted_authoritative_group_events.
 -      $event->created_at - 0,
 +      $event->created_at + 0,
+
+# Numeric no-op: `$context->{created_at} + 0` vs `- 0` both numify created_at to
+# the same value (this is the 4-space, column-aligned spelling; distinct source
+# lines with identical text share one signature).
+-    created_at         => $context->{created_at} - 0,
++    created_at         => $context->{created_at} + 0,

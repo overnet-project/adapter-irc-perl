@@ -3662,6 +3662,41 @@ subtest 'authoritative_join_admission does not offer request_join when the join 
     'a bad key blocks the request_join affordance even in a closed restricted channel';
 };
 
+subtest 'authoritative_join_admission does not offer request_join to an already-invited actor' => sub {
+  my $metadata = Net::Nostr::Group->metadata(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    created_at => 1_744_301_040,
+    closed     => 1,
+    restricted => 1,
+  )->to_hash;
+
+  my $invite = Net::Nostr::Group->create_invite(
+    pubkey     => 'f' x 64,
+    group_id   => 'overnet',
+    code       => 'invite-bob',
+    created_at => 1_744_301_050,
+  )->to_hash;
+  push @{$invite->{tags}}, ['p', 'b' x 64];
+
+  my $result = $adapter->derive(
+    operation      => 'authoritative_join_admission',
+    session_config => _authority_config(),
+    input          => {
+      network              => 'irc.example.test',
+      target               => '#overnet',
+      authoritative_events => [$metadata, $invite],
+      actor_pubkey         => 'b' x 64,
+    },
+  );
+
+  ok $result->{valid}, 'join admission derivation succeeds for an invited actor';
+  is $result->{admission}[0]{reason}, q{},
+    'a pending invite admits the actor without a symbolic denial reason';
+  ok !exists $result->{admission}[0]{request_join},
+    'an already-invited actor is not offered the request_join affordance (invite alone suffices)';
+};
+
 subtest 'authoritative metadata edit omits the key tag for an empty channel_key' => sub {
   my $result = $adapter->map_input(
     session_config => _authority_config(),
